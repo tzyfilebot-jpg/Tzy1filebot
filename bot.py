@@ -26,6 +26,7 @@ dp = Dispatcher()
 # =========================
 
 upload_session = {}
+user_page = {}
 cooldown = {}
 
 # =========================
@@ -136,31 +137,38 @@ async def account(call: CallbackQuery):
 async def vip(call: CallbackQuery):
     await call.message.answer("💎 VIP belum dibuka.")
 
+
 # =========================
 # UPLOAD START
 # =========================
 
 @dp.callback_query(F.data == "upload")
 async def upload_start(call: CallbackQuery):
-    uid = call.from_user.id
 
+    uid = call.from_user.id
     code = "tzy_" + secrets.token_hex(3)
 
     upload_session[uid] = {
         "code": code,
         "video": 0,
         "photo": 0,
-        "doc": 0
+        "doc": 0,
+        "active": True
     }
 
-    await call.message.answer(
-        "📤 Upload aktif.\n\n"
-        "Kirim file sekarang.\n"
-        "DONE = simpan\nCANCEL = batal"
+    await call.message.edit_text(
+        "📤 UPLOAD MODE AKTIF\n\n"
+        "Kirim media sekarang.\n",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ DONE", callback_data="done_upload"),
+                InlineKeyboardButton(text="❌ CANCEL", callback_data="cancel_upload")
+            ]
+        ])
     )
 
 # =========================
-# HANDLE MEDIA
+# HANDLE MEDIA (NO SPAM)
 # =========================
 
 @dp.message(F.content_type.in_({"video", "photo", "document"}))
@@ -169,6 +177,9 @@ async def handle_media(message: Message):
     uid = message.from_user.id
 
     if uid not in upload_session:
+        return
+
+    if not upload_session[uid].get("active"):
         return
 
     session = upload_session[uid]
@@ -196,24 +207,20 @@ async def handle_media(message: Message):
         0
     )
 
-    await message.answer(
-        f"📦 SAVED\n"
-        f"🎬 {session['video']} | 🖼 {session['photo']} | 📄 {session['doc']}"
-    )
-
 # =========================
-# DONE
+# DONE UPLOAD
 # =========================
 
-@dp.message(F.text == "DONE")
-async def done(message: Message):
+@dp.callback_query(F.data == "done_upload")
+async def done_upload(call: CallbackQuery):
 
-    uid = message.from_user.id
+    uid = call.from_user.id
 
     if uid not in upload_session:
         return
 
     s = upload_session[uid]
+    s["active"] = False
 
     final_code = f"{s['code']}_{s['video']}v_{s['photo']}p_{s['doc']}d"
 
@@ -226,33 +233,38 @@ async def done(message: Message):
 
     del upload_session[uid]
 
-    await message.answer(
-        "☠️ FILE LOCKED\n\n"
-        f"🔑 {final_code}\n\n"
-        "Jangan hilang. Tidak ada backup."
+    await call.message.edit_text(
+        "☠️ UPLOAD LOCKED\n\n"
+        f"🔑 CODE:\n{final_code}\n\n"
+        "Simpan baik-baik."
     )
 
 # =========================
-# CANCEL
+# CANCEL UPLOAD
 # =========================
 
-@dp.message(F.text == "CANCEL")
-async def cancel(message: Message):
-    uid = message.from_user.id
+@dp.callback_query(F.data == "cancel_upload")
+async def cancel_upload(call: CallbackQuery):
+
+    uid = call.from_user.id
 
     if uid in upload_session:
         del upload_session[uid]
 
-    await message.answer("⚰️ dibatalkan.")
+    await call.message.edit_text("⚰️ Upload dibatalkan.")
 
 # =========================
 # GET FILE SYSTEM
 # =========================
 
-@dp.message(F.text)
+@dp.message()
 async def get_file(message: Message):
 
-    text = message.text.strip()
+    text = message.text
+    if not text:
+        return
+
+    text = text.strip()
 
     if not text.startswith("tzy_"):
         return
@@ -262,7 +274,7 @@ async def get_file(message: Message):
     now = time.time()
 
     if code in cooldown and now - cooldown[code] < 5:
-        return await message.answer("⏳ cooldown")
+        return await message.answer("⏳ cooldown 5 detik")
 
     cooldown[code] = now
 
@@ -274,21 +286,86 @@ async def get_file(message: Message):
     per_page = 5
     pages = [media[i:i+per_page] for i in range(0, len(media), per_page)]
 
+    user_page[message.from_user.id] = {
+        "pages": pages,
+        "index": 0
+    }
+
+    await message.answer("📥 ACCESS GRANTED")
+
+    await send_page(message, message.from_user.id)
+
+# =========================
+# SEND PAGE
+# =========================
+
+async def send_page(message, uid):
+
+    session = user_page.get(uid)
+    if not session:
+        return
+
+    pages = session["pages"]
+    index = session["index"]
+
+    for m in pages[index]:
+        await bot.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=DB_CHANNEL_ID,
+            message_id=m["message_id"]
+        )
+
     await message.answer(
-        "📥 ACCESS GRANTED\n"
-        "Mengambil file..."
+        f"📄 PAGE {index+1}/{len(pages)}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⬅ Prev", callback_data="prev_page"),
+                InlineKeyboardButton(text="Next ➡", callback_data="next_page")
+            ]
+        ])
     )
 
-    for i, page in enumerate(pages):
-        for m in page:
-            await bot.copy_message(
-                chat_id=message.chat.id,
-                from_chat_id=DB_CHANNEL_ID,
-                message_id=m["message_id"]
-            )
+# =========================
+# NEXT PAGE
+# =========================
 
-        await message.answer(f"PAGE {i+1}/{len(pages)}")
+@dp.callback_query(F.data == "next_page")
+async def next_page(call: CallbackQuery):
 
+    uid = call.from_user.id
+    session = user_page.get(uid)
+
+    if not session:
+        return await call.answer("No session", show_alert=True)
+
+    if session["index"] + 1 >= len(session["pages"]):
+        return await call.answer("Last page")
+
+    session["index"] += 1
+
+    await call.message.delete()
+    await send_page(call.message, uid)
+
+# =========================
+# PREV PAGE
+# =========================
+
+@dp.callback_query(F.data == "prev_page")
+async def prev_page(call: CallbackQuery):
+
+    uid = call.from_user.id
+    session = user_page.get(uid)
+
+    if not session:
+        return await call.answer("No session", show_alert=True)
+
+    if session["index"] <= 0:
+        return await call.answer("First page")
+
+    session["index"] -= 1
+
+    await call.message.delete()
+    await send_page(call.message, uid)
 # =========================
 # RUN
 # =========================
