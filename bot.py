@@ -316,19 +316,24 @@ async def up_file(message: Message):
 
     user_id = message.from_user.id
 
-    user_states[user_id] = {
-        "mode": "upload"
-    }
+    upload_sessions.pop(user_id, None)
+    user_states.pop(user_id, None)
+
+    user_states[user_id] = {"mode": "upload"}
 
     upload_sessions[user_id] = {
         "video": 0,
         "photo": 0,
         "document": 0,
-        "items": []
+        "items": [],
+        "msg_id": None
     }
 
     msg = await message.answer(
-        "📤 Upload mode aktif\n\nKirim media lalu tekan DONE",
+        "📤 UPLOAD MODE AKTIF\n\n"
+        "😏 Silakan kirim file kamu.\n"
+        "Tapi jangan lupa tekan DONE ya...\n\n"
+        "💀 Bot nggak akan menunggu kamu selamanya.",
         reply_markup=upload_kb()
     )
 
@@ -348,37 +353,27 @@ async def handle_media(message: Message):
     if not state or state.get("mode") != "upload":
         return
 
-    if not s or "msg_id" not in s:
+    if not s or not s.get("msg_id"):
         return
 
-    # =========================
     # AMBIL FILE
-    # =========================
-
     if message.photo:
-
         file_id = message.photo[-1].file_id
         file_type = "photo"
         size = message.photo[-1].file_size or 0
         s["photo"] += 1
 
     elif message.video:
-
         file_id = message.video.file_id
         file_type = "video"
         size = message.video.file_size or 0
         s["video"] += 1
 
     else:
-
         file_id = message.document.file_id
         file_type = "document"
         size = message.document.file_size or 0
         s["document"] += 1
-
-    # =========================
-    # SIMPAN
-    # =========================
 
     s["items"].append({
         "file_id": file_id,
@@ -386,36 +381,34 @@ async def handle_media(message: Message):
         "size": size
     })
 
-    # =========================
-    # AUTO DELETE USER MEDIA
-    # =========================
+    # 💀 auto delete user spam
     try:
         await message.delete()
     except:
         pass
 
-    # =========================
-    # THROTTLE EDIT (ANTI FLOOD)
-    # =========================
-
+    # 🧠 anti flood ringan
     now = time.time()
     last = last_edit_time.get(user_id, 0)
 
-    if now - last < 1.0:
-        return  # skip update kalau terlalu cepat
+    if now - last < 0.9:
+        return
 
     last_edit_time[user_id] = now
 
-    # =========================
-    # UPDATE TEXT
-    # =========================
+    total = len(s["items"])
+    size_mb = round(sum(x["size"] for x in s["items"]) / (1024 * 1024), 2)
 
+    # 💀 SAVAGE TEXT UI
     text = (
-        "📤 Uploading...\n\n"
-        f"🎥 Video : {s['video']}\n"
-        f"🖼 Photo : {s['photo']}\n"
-        f"📁 Doc : {s['document']}\n"
-        f"📦 Total : {len(s['items'])}"
+        "📤 UPLOADING...\n\n"
+        f"🎥 Video     : {s['video']}\n"
+        f"🖼 Photo     : {s['photo']}\n"
+        f"📁 Document  : {s['document']}\n"
+        f"📦 Total     : {total}\n"
+        f"💾 Size      : {size_mb} MB\n\n"
+        "😏 Bot bekerja...\n"
+        "💀 Jangan cuma nonton, kirim semua file kamu."
     )
 
     try:
@@ -450,22 +443,17 @@ def generate_code(v, p, d):
 # DONE
 # =========================
 
-@router.callback_query(
-    F.data == "upload_done"
-)
+@router.callback_query(F.data == "upload_done")
 async def done(call: CallbackQuery):
 
     user_id = call.from_user.id
-
     s = upload_sessions.get(user_id)
 
     if not s or not s["items"]:
-
-        await call.answer(
-            "kosong"
+        return await call.answer(
+            "😏 kosong? ya jelas gak ada yang diproses",
+            show_alert=True
         )
-
-        return
 
     code = generate_code(
         s["video"],
@@ -473,30 +461,14 @@ async def done(call: CallbackQuery):
         s["document"]
     )
 
-    total_size = sum(
-        x["size"]
-        for x in s["items"]
-    )
+    total_size = sum(x["size"] for x in s["items"])
 
     async with db_pool.acquire() as conn:
 
         await conn.execute(
             """
-            INSERT INTO codes
-            (
-                code,
-                owner_id,
-                total_media,
-                total_size
-            )
-
-            VALUES
-            (
-                $1,
-                $2,
-                $3,
-                $4
-            )
+            INSERT INTO codes(code, owner_id, total_media, total_size)
+            VALUES($1,$2,$3,$4)
             """,
             code,
             user_id,
@@ -504,48 +476,29 @@ async def done(call: CallbackQuery):
             total_size
         )
 
-        for media in s["items"]:
+        await conn.executemany(
+            """
+            INSERT INTO medias(code, file_id, file_type, file_size)
+            VALUES($1,$2,$3,$4)
+            """,
+            [
+                (code, m["file_id"], m["type"], m["size"])
+                for m in s["items"]
+            ]
+        )
 
-            await conn.execute(
-                """
-                INSERT INTO medias
-                (
-                    code,
-                    file_id,
-                    file_type,
-                    file_size
-                )
-
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3,
-                    $4
-                )
-                """,
-                code,
-                media["file_id"],
-                media["type"],
-                media["size"]
-            )
-
-    upload_sessions.pop(
-        user_id,
-        None
-    )
-
-    user_states.pop(
-        user_id,
-        None
-    )
+    upload_sessions.pop(user_id, None)
+    user_states.pop(user_id, None)
+    last_edit_time.pop(user_id, None)
 
     await call.message.edit_text(
-        f"✅ DONE\n\n"
-        f"<code>{code}</code>",
+        "💀 UPLOAD COMPLETE\n\n"
+        f"😏 CODE: <code>{code}</code>\n\n"
+        "📌 Simpan CODE itu baik-baik\n"
+        "Kalau hilang...\n"
+        "itu bukan salah bot ya 😌",
         parse_mode="HTML"
     )
-
 # =========================
 # CANCEL
 # =========================
