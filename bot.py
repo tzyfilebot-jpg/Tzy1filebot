@@ -52,12 +52,17 @@ VIP_LINK = os.getenv("VIP_LINK")
 db_pool: asyncpg.Pool = None
 
 async def init_db():
+
     global db_pool
 
     db_pool = await asyncpg.create_pool(
+
         DATABASE_URL,
+
         min_size=1,
+
         max_size=10
+
     )
 
     async with db_pool.acquire() as conn:
@@ -72,12 +77,22 @@ async def init_db():
 
         );
 
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS username TEXT;
+
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS fullname TEXT;
+
         CREATE TABLE IF NOT EXISTS codes(
 
             id SERIAL PRIMARY KEY,
+
             code TEXT UNIQUE,
+
             owner_id BIGINT,
+
             total_media INT,
+
             total_size BIGINT
 
         );
@@ -85,15 +100,18 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS medias(
 
             id SERIAL PRIMARY KEY,
+
             code TEXT,
+
             file_id TEXT,
+
             file_type TEXT,
+
             file_size BIGINT
 
         );
 
         """)
-
 # =========================
 # CACHE
 # =========================
