@@ -11,9 +11,15 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
-    Message, CallbackQuery,
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    Message,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaDocument
 )
 
 from aiogram.exceptions import TelegramBadRequest
@@ -28,9 +34,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 CHANNEL_DB = os.getenv("CHANNEL_DB")
-ADMINS = set(int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit())
+ADMINS = set(
+    int(x)
+    for x in os.getenv("ADMINS", "").split(",")
+    if x.strip().isdigit()
+)
 
 FORCE_CHANNEL = os.getenv("FORCE_CHANNEL")
+UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL")
+NOTIFICATION_CHANNEL = os.getenv("NOTIFICATION_CHANNEL")
+VIP_LINK = os.getenv("VIP_LINK")
 
 # =========================
 # DB POOL
@@ -40,7 +53,46 @@ db_pool: asyncpg.Pool = None
 
 async def init_db():
     global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=10
+    )
+
+    async with db_pool.acquire() as conn:
+
+        await conn.execute("""
+
+        CREATE TABLE IF NOT EXISTS users(
+
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            fullname TEXT
+
+        );
+
+        CREATE TABLE IF NOT EXISTS codes(
+
+            id SERIAL PRIMARY KEY,
+            code TEXT UNIQUE,
+            owner_id BIGINT,
+            total_media INT,
+            total_size BIGINT
+
+        );
+
+        CREATE TABLE IF NOT EXISTS medias(
+
+            id SERIAL PRIMARY KEY,
+            code TEXT,
+            file_id TEXT,
+            file_type TEXT,
+            file_size BIGINT
+
+        );
+
+        """)
 
 # =========================
 # CACHE
@@ -50,72 +102,6 @@ upload_sessions = {}
 user_states = {}
 
 # =========================
-# KEYBOARD
-# =========================
-
-def get_keyboard(is_admin: bool = False):
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="📤 Up File"),
-                KeyboardButton(text="📥 Get File")
-            ],
-            [
-                KeyboardButton(text="👤 Account"),
-                KeyboardButton(text="💎 VIP")
-            ]
-        ],
-        resize_keyboard=True
-    )
-
-# =========================
-# FORCE SUB
-# =========================
-
-async def check_force_sub(bot: Bot, user_id: int, channel: str) -> bool:
-    try:
-        channel = channel.replace("@", "")
-        member = await bot.get_chat_member(f"@{channel}", user_id)
-        return member.status in ("member", "administrator", "creator")
-    except TelegramBadRequest:
-        return False
-
-def force_kb(channel: str):
-    ch = channel.replace("@", "")
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton("📢 Join", url=f"https://t.me/{ch}")],
-            [InlineKeyboardButton("🔄 Check", callback_data="check_sub")]
-        ]
-    )
-
-# =========================
-# ROUTER
-# =========================
-
-router = Router()
-
-# =========================
-# START
-# =========================
-
-@router.message(F.text == "/start")
-async def start(message: Message, bot: Bot):
-    user_id = message.from_user.id
-
-    if not await check_force_sub(bot, user_id, FORCE_CHANNEL):
-        await message.answer(
-            "⚠ Wajib join channel dulu",
-            reply_markup=force_kb(FORCE_CHANNEL)
-        )
-        return
-
-    await message.answer(
-        "🔥 Menu Bot Aktif",
-        reply_markup=get_keyboard(user_id in ADMINS)
-    )
-
-# =========================
 # UP FILE INIT
 # =========================
 
@@ -123,17 +109,25 @@ def upload_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton("✅ DONE", callback_data="upload_done"),
-                InlineKeyboardButton("❌ CANCEL", callback_data="upload_cancel")
+                InlineKeyboardButton(
+                    text="✅ DONE",
+                    callback_data="upload_done"
+                ),
+                InlineKeyboardButton(
+                    text="❌ CANCEL",
+                    callback_data="upload_cancel"
+                )
             ]
         ]
     )
 
 @router.message(F.text == "📤 Up File")
 async def up_file(message: Message):
+
     user_id = message.from_user.id
 
     user_states[user_id] = "upload"
+
     upload_sessions[user_id] = {
         "video": 0,
         "photo": 0,
@@ -154,6 +148,7 @@ async def up_file(message: Message):
 
 @router.message(F.photo | F.video | F.document)
 async def handle_media(message: Message):
+
     user_id = message.from_user.id
 
     if user_states.get(user_id) != "upload":
@@ -162,38 +157,49 @@ async def handle_media(message: Message):
     s = upload_sessions[user_id]
 
     if message.photo:
+
         s["photo"] += 1
-        file = message.photo[-1].file_id
-        t = "photo"
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
         size = message.photo[-1].file_size
 
     elif message.video:
+
         s["video"] += 1
-        file = message.video.file_id
-        t = "video"
+        file_id = message.video.file_id
+        file_type = "video"
         size = message.video.file_size
 
     else:
+
         s["document"] += 1
-        file = message.document.file_id
-        t = "document"
+        file_id = message.document.file_id
+        file_type = "document"
         size = message.document.file_size
 
-    s["items"].append({"file_id": file, "type": t, "size": size})
+    s["items"].append({
+        "file_id": file_id,
+        "type": file_type,
+        "size": size
+    })
 
     text = (
         "📤 Uploading...\n\n"
-        f"🎥 {s['video']} | 🖼 {s['photo']} | 📁 {s['document']}\n"
+        f"🎥 {s['video']} | "
+        f"🖼 {s['photo']} | "
+        f"📁 {s['document']}\n"
         f"📦 Total: {len(s['items'])}"
     )
 
     try:
+
         await message.bot.edit_message_text(
             chat_id=user_id,
             message_id=s["msg_id"],
             text=text,
             reply_markup=upload_kb()
         )
+
     except:
         pass
 
@@ -202,37 +208,117 @@ async def handle_media(message: Message):
 # =========================
 
 def generate_code(v, p, d):
-    rand = ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(10))
+
+    rand = "".join(
+
+        secrets.choice(
+            string.ascii_lowercase +
+            string.digits
+        )
+
+        for _ in range(10)
+
+    )
+
     return f"tzy_{v}v_{p}p_{d}d_{rand}"
 
 # =========================
 # DONE
 # =========================
 
-@router.callback_query(F.data == "upload_done")
+@router.callback_query(
+    F.data == "upload_done"
+)
 async def done(call: CallbackQuery):
+
     user_id = call.from_user.id
+
     s = upload_sessions.get(user_id)
 
     if not s or not s["items"]:
-        await call.answer("kosong")
-        return
 
-    code = generate_code(s["video"], s["photo"], s["document"])
-
-    total_size = sum(x["size"] for x in s["items"])
-
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO codes (code, owner_id, total_media, total_size) VALUES ($1,$2,$3,$4)",
-            code, user_id, len(s["items"]), total_size
+        await call.answer(
+            "kosong"
         )
 
-    upload_sessions.pop(user_id, None)
-    user_states.pop(user_id, None)
+        return
+
+    code = generate_code(
+        s["video"],
+        s["photo"],
+        s["document"]
+    )
+
+    total_size = sum(
+        x["size"]
+        for x in s["items"]
+    )
+
+    async with db_pool.acquire() as conn:
+
+        await conn.execute(
+            """
+            INSERT INTO codes
+            (
+                code,
+                owner_id,
+                total_media,
+                total_size
+            )
+
+            VALUES
+            (
+                $1,
+                $2,
+                $3,
+                $4
+            )
+            """,
+            code,
+            user_id,
+            len(s["items"]),
+            total_size
+        )
+
+        for media in s["items"]:
+
+            await conn.execute(
+                """
+                INSERT INTO medias
+                (
+                    code,
+                    file_id,
+                    file_type,
+                    file_size
+                )
+
+                VALUES
+                (
+                    $1,
+                    $2,
+                    $3,
+                    $4
+                )
+                """,
+                code,
+                media["file_id"],
+                media["type"],
+                media["size"]
+            )
+
+    upload_sessions.pop(
+        user_id,
+        None
+    )
+
+    user_states.pop(
+        user_id,
+        None
+    )
 
     await call.message.edit_text(
-        f"✅ DONE\n\n<code>{code}</code>",
+        f"✅ DONE\n\n"
+        f"<code>{code}</code>",
         parse_mode="HTML"
     )
 
@@ -240,34 +326,47 @@ async def done(call: CallbackQuery):
 # CANCEL
 # =========================
 
-@router.callback_query(F.data == "upload_cancel")
-async def cancel(call: CallbackQuery):
+@router.callback_query(
+    F.data == "upload_cancel"
+)
+async def cancel(
+    call: CallbackQuery
+):
+
     user_id = call.from_user.id
 
-    upload_sessions.pop(user_id, None)
-    user_states.pop(user_id, None)
+    upload_sessions.pop(
+        user_id,
+        None
+    )
 
-    await call.message.edit_text("❌ Cancelled")
+    user_states.pop(
+        user_id,
+        None
+    )
+
+    await call.message.edit_text(
+        "❌ Cancelled"
+    )
 # =========================
-
 # OPEN GET FILE MODE
-
 # =========================
 
 @router.message(F.text == "📥 Get File")
-
 async def get_file_start(message: Message):
 
     user_id = message.from_user.id
 
-    user_states[user_id] = "getfile"
+    user_states[user_id] = {
+        "mode": "getfile"
+    }
 
-    await message.answer("📥 Kirim CODE untuk mengambil file")
+    await message.answer(
+        "📥 Kirim CODE untuk mengambil file"
+    )
 
 # =========================
-
 # LOAD DATA FROM DB
-
 # =========================
 
 async def load_media(code: str):
@@ -275,27 +374,30 @@ async def load_media(code: str):
     async with db_pool.acquire() as conn:
 
         return await conn.fetch(
-
-            "SELECT file_id, file_type FROM medias WHERE code=$1 ORDER BY id ASC",
-
+            """
+            SELECT file_id, file_type
+            FROM medias
+            WHERE code=$1
+            ORDER BY id ASC
+            """,
             code
-
         )
 
 # =========================
-
 # RECEIVE CODE
-
 # =========================
 
 @router.message(F.text)
-
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
 
-    if user_states.get(user_id) != "getfile":
+    state = user_states.get(user_id)
 
+    if not state:
+        return
+
+    if state.get("mode") != "getfile":
         return
 
     code = message.text.strip()
@@ -303,52 +405,59 @@ async def receive_code(message: Message):
     data = await load_media(code)
 
     if not data:
-
-        await message.answer("❌ CODE tidak ditemukan")
-
+        await message.answer(
+            "❌ CODE tidak ditemukan"
+        )
         return
 
     user_states[user_id] = {
-
         "mode": "view",
-
         "code": code,
-
-        "index": 0,
-
         "page": 0,
-
         "data": data
-
     }
 
-    await send_page(message, user_id)
+    await send_page(
+        message,
+        user_id
+    )
 
 # =========================
-
 # BUILD KEYBOARD
-
 # =========================
 
-def build_kb(page, total_pages, show_numbers=True):
+def build_kb(
+    page,
+    total_pages,
+    show_numbers=True
+):
 
     nav = []
 
-    # prev
-
-    nav.append({"text": "⬅ Prev", "callback_data": "prev"})
-
-    # page numbers (only if many pages)
+    nav.append(
+        InlineKeyboardButton(
+            text="⬅ Prev",
+            callback_data="prev"
+        )
+    )
 
     if show_numbers:
 
         for i in range(total_pages):
 
-            nav.append({"text": str(i + 1), "callback_data": f"page:{i}"})
+            nav.append(
+                InlineKeyboardButton(
+                    text=str(i + 1),
+                    callback_data=f"page:{i}"
+                )
+            )
 
-    # next
-
-    nav.append({"text": "Next ➡", "callback_data": "next"})
+    nav.append(
+        InlineKeyboardButton(
+            text="Next ➡",
+            callback_data="next"
+        )
+    )
 
     return InlineKeyboardMarkup(
 
@@ -358,9 +467,15 @@ def build_kb(page, total_pages, show_numbers=True):
 
             [
 
-                {"text": "📢 Channel Update", "url": "https://t.me/" + UPDATE_CHANNEL.replace("@", "")},
+                InlineKeyboardButton(
+                    text="📢 Update",
+                    url=f"https://t.me/{UPDATE_CHANNEL.replace('@','')}"
+                ),
 
-                {"text": "🔔 Notification", "url": "https://t.me/" + NOTIFICATION_CHANNEL.replace("@", "")}
+                InlineKeyboardButton(
+                    text="🔔 Notification",
+                    url=f"https://t.me/{NOTIFICATION_CHANNEL.replace('@','')}"
+                )
 
             ]
 
@@ -369,12 +484,13 @@ def build_kb(page, total_pages, show_numbers=True):
     )
 
 # =========================
-
-# SEND PAGE (MAX 5 MEDIA PER BUBBLE)
-
+# SEND PAGE
 # =========================
 
-async def send_page(message: Message, user_id: int):
+async def send_page(
+    message: Message,
+    user_id: int
+):
 
     state = user_states[user_id]
 
@@ -385,171 +501,239 @@ async def send_page(message: Message, user_id: int):
     page = state["page"]
 
     start = page * page_size
-
     end = start + page_size
 
     chunk = data[start:end]
 
-    total_pages = (len(data) + page_size - 1) // page_size
+    total_pages = (
+        len(data) + page_size - 1
+    ) // page_size
 
-    show_numbers = len(data) > 5
+    show_numbers = total_pages > 1
 
     text = (
 
         f"📦 CODE: {state['code']}\n"
-
         f"📄 Page {page+1}/{total_pages}\n"
-
         f"🔒 WATERMARK: @YourBotName"
 
     )
 
-    # kalau hanya 1 file di page → kirim normal
-
     if len(chunk) == 1:
 
-        m = chunk[0]
+        media = chunk[0]
 
-        await send_single(message, m, text, page, total_pages, show_numbers)
+        await send_single(
+            message,
+            media,
+            text,
+            page,
+            total_pages,
+            show_numbers
+        )
 
         return
-
-    # kalau 2-5 file → album style (bubble group logic simplified)
 
     media_group = []
 
-    for m in chunk:
+    for media in chunk:
 
-        if m["file_type"] == "photo":
+        if media["file_type"] == "photo":
 
-            media_group.append(InputMediaPhoto(media=m["file_id"]))
+            media_group.append(
+                InputMediaPhoto(
+                    media=media["file_id"]
+                )
+            )
 
-        elif m["file_type"] == "video":
+        elif media["file_type"] == "video":
 
-            media_group.append(InputMediaVideo(media=m["file_id"]))
+            media_group.append(
+                InputMediaVideo(
+                    media=media["file_id"]
+                )
+            )
 
         else:
 
-            media_group.append(InputMediaDocument(media=m["file_id"]))
+            media_group.append(
+                InputMediaDocument(
+                    media=media["file_id"]
+                )
+            )
 
-    await message.answer_media_group(media_group)
+    await message.answer_media_group(
+        media_group
+    )
 
     await message.answer(
-
         text,
-
-        reply_markup=build_kb(page, total_pages, show_numbers)
-
+        reply_markup=build_kb(
+            page,
+            total_pages,
+            show_numbers
+        )
     )
 
 # =========================
-
-# SINGLE MEDIA VIEW
-
+# SEND SINGLE
 # =========================
 
-async def send_single(message, m, text, page, total_pages, show_numbers):
+async def send_single(
+    message,
+    media,
+    text,
+    page,
+    total_pages,
+    show_numbers
+):
 
-    kb = build_kb(page, total_pages, show_numbers)
+    kb = build_kb(
+        page,
+        total_pages,
+        show_numbers
+    )
 
-    if m["file_type"] == "photo":
+    if media["file_type"] == "photo":
 
-        await message.answer_photo(m["file_id"], caption=text, reply_markup=kb)
+        await message.answer_photo(
+            media["file_id"],
+            caption=text,
+            reply_markup=kb
+        )
 
-    elif m["file_type"] == "video":
+    elif media["file_type"] == "video":
 
-        await message.answer_video(m["file_id"], caption=text, reply_markup=kb)
+        await message.answer_video(
+            media["file_id"],
+            caption=text,
+            reply_markup=kb
+        )
 
     else:
 
-        await message.answer_document(m["file_id"], caption=text, reply_markup=kb)
+        await message.answer_document(
+            media["file_id"],
+            caption=text,
+            reply_markup=kb
+        )
 
 # =========================
-
-# PAGINATION CONTROL
-
+# PAGINATION
 # =========================
 
-@router.callback_query(F.data.in_(["next", "prev"]))
-
-async def paginate(call: CallbackQuery):
+@router.callback_query(
+    F.data.in_(["next", "prev"])
+)
+async def paginate(
+    call: CallbackQuery
+):
 
     user_id = call.from_user.id
 
-    if user_id not in user_states:
+    state = user_states.get(user_id)
 
+    if not state:
         return
-
-    state = user_states[user_id]
 
     if state.get("mode") != "view":
-
         return
 
-    total_pages = (len(state["data"]) + 4) // 5
+    total_pages = (
+        len(state["data"]) + 4
+    ) // 5
 
     if call.data == "next":
 
         if state["page"] < total_pages - 1:
-
             state["page"] += 1
 
-    elif call.data == "prev":
+    else:
 
         if state["page"] > 0:
-
             state["page"] -= 1
 
     await call.message.delete()
 
-    await send_page(call.message, user_id)
+    await send_page(
+        call.message,
+        user_id
+    )
 
 # =========================
-
-# PAGE SELECT (1 2 3 4 5)
-
+# PAGE SELECT
 # =========================
 
-@router.callback_query(F.data.startswith("page:"))
-
-async def select_page(call: CallbackQuery):
+@router.callback_query(
+    F.data.startswith("page:")
+)
+async def select_page(
+    call: CallbackQuery
+):
 
     user_id = call.from_user.id
 
-    if user_id not in user_states:
+    state = user_states.get(user_id)
 
+    if not state:
         return
 
-    page = int(call.data.split(":")[1])
-
-    state = user_states[user_id]
+    page = int(
+        call.data.split(":")[1]
+    )
 
     state["page"] = page
 
     await call.message.delete()
 
-    await send_page(call.message, user_id)
-
-# =========================
-# HELP
-# =========================
-
-@router.message(F.text == "/help")
-async def help_cmd(message: Message):
-    await message.answer(
-        "📖 HELP MENU\n\n"
-        "📤 Up File → upload media & generate code\n"
-        "📥 Get File → ambil file pakai code\n"
-        "👤 Account → lihat akun kamu\n"
-        "💎 VIP → fitur premium\n"
+    await send_page(
+        call.message,
+        user_id
     )
+
+# =========================
+# ADD USER FUNCTION
+# =========================
+
+async def add_user(
+    user_id,
+    username,
+    fullname
+):
+
+    async with db_pool.acquire() as conn:
+
+        await conn.execute(
+            """
+            INSERT INTO users
+            (user_id,username,fullname)
+
+            VALUES($1,$2,$3)
+
+            ON CONFLICT(user_id)
+
+            DO UPDATE SET
+
+            username=$2,
+            fullname=$3
+            """,
+
+            user_id,
+            username,
+            fullname
+        )
 
 # =========================
 # ACCOUNT
 # =========================
 
-@router.message(F.text == "👤 Account")
-async def account_cmd(message: Message):
+@router.message(
+    F.text == "👤 Account"
+)
+async def account_cmd(
+    message: Message
+):
+
     user = message.from_user
 
     await add_user(
@@ -559,23 +743,31 @@ async def account_cmd(message: Message):
     )
 
     await message.answer(
-        "👤 ACCOUNT INFO\n\n"
+
+        f"👤 ACCOUNT INFO\n\n"
         f"🆔 ID: {user.id}\n"
         f"👤 Name: {user.full_name}\n"
-        f"🔗 Username: @{user.username if user.username else 'none'}"
-    )
+        f"🔗 Username: @{user.username or 'none'}"
 
+    )
 # =========================
 # VIP
 # =========================
 
 def vip_kb():
+
+    link = (
+        VIP_LINK
+        .replace("https://t.me/", "")
+        .replace("@", "")
+    )
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="🚀 Join VIP",
-                    url=f"https://t.me/{VIP_LINK}"
+                    url=f"https://t.me/{link}"
                 )
             ],
             [
@@ -590,100 +782,214 @@ def vip_kb():
 
 @router.message(F.text == "💎 VIP")
 async def vip_menu(message: Message):
+
     await message.answer(
         "💎 VIP MENU\n\n"
         "🔥 Unlimited Upload\n"
         "🔥 Priority Get File\n"
-        "🔥 Fast Response\n",
+        "🔥 Fast Response",
         reply_markup=vip_kb()
     )
 
 
-@router.callback_query(F.data == "vip_cancel")
-async def vip_cancel(call: CallbackQuery):
-    await call.message.edit_text("❌ VIP dibatalkan")
+@router.callback_query(
+    F.data == "vip_cancel"
+)
+async def vip_cancel(
+    call: CallbackQuery
+):
+
+    await call.message.edit_text(
+        "❌ VIP dibatalkan"
+    )
 
 # =========================
-# ADMIN PANEL
+# ADMIN CHECK
 # =========================
 
-def is_admin(user_id: int):
+def is_admin(
+    user_id: int
+):
+
     return user_id in ADMINS
 
 # =========================
 # ADD ADMIN
 # =========================
 
-@router.message(F.text.startswith("/addadmin"))
-async def add_admin(message: Message):
-    if message.from_user.id not in ADMINS:
-        return await message.answer("❌ Not allowed")
+@router.message(
+    F.text.startswith("/addadmin")
+)
+async def add_admin(
+    message: Message
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        return await message.answer(
+            "❌ Not allowed"
+        )
 
     try:
-        uid = int(message.text.split()[1])
+
+        uid = int(
+            message.text.split()[1]
+        )
+
         ADMINS.add(uid)
-        await message.answer(f"✅ Admin ditambah: {uid}")
+
+        await message.answer(
+            f"✅ Admin ditambah: {uid}"
+        )
+
     except:
-        await message.answer("❌ Format: /addadmin <id>")
+
+        await message.answer(
+            "❌ Format:\n/addadmin <id>"
+        )
 
 # =========================
 # STATISTIC
 # =========================
 
-@router.message(F.text == "/stat")
-async def stat_cmd(message: Message):
-    if message.from_user.id not in ADMINS:
-        return await message.answer("❌ Not allowed")
+@router.message(
+    F.text == "/stat"
+)
+async def stat_cmd(
+    message: Message
+):
 
-    users = await db_pool.fetchval("SELECT COUNT(*) FROM users")
-    codes = await db_pool.fetchval("SELECT COUNT(*) FROM codes")
-    media = await db_pool.fetchval("SELECT COUNT(*) FROM medias")
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        return await message.answer(
+            "❌ Not allowed"
+        )
+
+    async with db_pool.acquire() as conn:
+
+        users = await conn.fetchval(
+            "SELECT COUNT(*) FROM users"
+        )
+
+        codes = await conn.fetchval(
+            "SELECT COUNT(*) FROM codes"
+        )
+
+        media = await conn.fetchval(
+            "SELECT COUNT(*) FROM medias"
+        )
 
     await message.answer(
+
         "📊 STATISTIC\n\n"
         f"👤 Users: {users}\n"
         f"🔑 Codes: {codes}\n"
         f"📦 Media: {media}"
+
     )
 
 # =========================
 # BROADCAST
 # =========================
 
-@router.message(F.text.startswith("/broadcast"))
-async def broadcast_cmd(message: Message):
-    if message.from_user.id not in ADMINS:
-        return await message.answer("❌ Not allowed")
+@router.message(
+    F.text.startswith("/broadcast")
+)
+async def broadcast_cmd(
+    message: Message
+):
 
-    text = message.text.replace("/broadcast", "").strip()
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        return await message.answer(
+            "❌ Not allowed"
+        )
+
+    text = (
+        message.text
+        .replace("/broadcast", "")
+        .strip()
+    )
 
     if not text:
-        return await message.answer("❌ /broadcast pesan")
 
-    users = await db_pool.fetch("SELECT user_id FROM users")
+        return await message.answer(
+            "❌ Format:\n/broadcast pesan"
+        )
 
-    for u in users:
+    async with db_pool.acquire() as conn:
+
+        users = await conn.fetch(
+            """
+            SELECT user_id
+            FROM users
+            """
+        )
+
+    sent = 0
+
+    for user in users:
+
         try:
-            await message.bot.send_message(u["user_id"], text)
+
+            await message.bot.send_message(
+                user["user_id"],
+                text
+            )
+
+            sent += 1
+
         except:
+
             pass
 
-    await message.answer("✅ Broadcast selesai")
+    await message.answer(
+        f"✅ Broadcast selesai\n\n"
+        f"📤 Terkirim: {sent}"
+    )
 
 # =========================
 # STARTUP
 # =========================
 
 async def main():
-    bot = Bot(token=BOT_TOKEN)
+
+    bot = Bot(
+        token=BOT_TOKEN
+    )
+
     dp = Dispatcher()
 
-    dp.include_router(router)
+    dp.include_router(
+        router
+    )
 
     await init_db()
-    await dp.start_polling(bot)
 
+    try:
+
+        await dp.start_polling(
+            bot
+        )
+
+    finally:
+
+        await bot.session.close()
+
+# =========================
+# RUN
+# =========================
 
 if __name__ == "__main__":
+
     import asyncio
-    asyncio.run(main())
+
+    asyncio.run(
+        main()
+    )
