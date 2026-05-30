@@ -52,17 +52,16 @@ VIP_LINK = os.getenv("VIP_LINK")
 db_pool: asyncpg.Pool = None
 
 async def init_db():
-
     global db_pool
 
     db_pool = await asyncpg.create_pool(
-
         DATABASE_URL,
 
         min_size=1,
+        max_size=10,
 
-        max_size=10
-
+        statement_cache_size=0,
+        command_timeout=60
     )
 
     async with db_pool.acquire() as conn:
@@ -70,46 +69,29 @@ async def init_db():
         await conn.execute("""
 
         CREATE TABLE IF NOT EXISTS users(
-
             user_id BIGINT PRIMARY KEY,
             username TEXT,
             fullname TEXT
-
         );
 
-        ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS username TEXT;
-
-        ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS fullname TEXT;
-
         CREATE TABLE IF NOT EXISTS codes(
-
             id SERIAL PRIMARY KEY,
-
             code TEXT UNIQUE,
-
             owner_id BIGINT,
-
             total_media INT,
-
             total_size BIGINT
-
         );
 
         CREATE TABLE IF NOT EXISTS medias(
-
             id SERIAL PRIMARY KEY,
-
             code TEXT,
-
             file_id TEXT,
-
             file_type TEXT,
-
             file_size BIGINT
-
         );
+
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS fullname TEXT;
 
         """)
 # =========================
@@ -131,24 +113,31 @@ router = Router()
 def get_keyboard(is_admin=False):
 
     rows = [
+
         [
             KeyboardButton(text="📤 Up File"),
             KeyboardButton(text="📥 Get File")
         ],
+
         [
             KeyboardButton(text="👤 Account"),
             KeyboardButton(text="💎 VIP")
         ],
+
         [
             KeyboardButton(text="❓ Help")
         ]
+
     ]
 
-    
-
     return ReplyKeyboardMarkup(
+
         keyboard=rows,
-        resize_keyboard=True
+
+        resize_keyboard=True,
+
+        input_field_placeholder="Pilih menu..."
+
     )
 # =========================
 # FORCE SUB
