@@ -331,68 +331,115 @@ async def up_file(message: Message):
 # MEDIA HANDLER
 # =========================
 
-@router.message(F.photo | F.video | F.document)
-async def handle_media(message: Message):
+@router.message(
+    F.photo | F.video | F.document
+)
+async def handle_media(
+    message: Message
+):
 
     user_id = message.from_user.id
 
-    state = user_states.get(user_id)
+    state = user_states.get(
+        user_id
+    )
 
-if not state:
-    return
+    if not state:
 
-if state.get("mode") != "upload":
-    return
-    s = upload_sessions.get(user_id)
+        return
 
-if not s:
-    return
+    if state != "upload":
+
+        return
+
+    s = upload_sessions.get(
+        user_id
+    )
+
+    if not s:
+
+        return
 
     if message.photo:
 
         s["photo"] += 1
-        file_id = message.photo[-1].file_id
+
+        file_id = (
+            message.photo[-1]
+            .file_id
+        )
+
         file_type = "photo"
-        size = message.photo[-1].file_size
+
+        size = (
+            message.photo[-1]
+            .file_size
+        )
 
     elif message.video:
 
         s["video"] += 1
-        file_id = message.video.file_id
+
+        file_id = (
+            message.video.file_id
+        )
+
         file_type = "video"
-        size = message.video.file_size
+
+        size = (
+            message.video.file_size
+        )
 
     else:
 
         s["document"] += 1
-        file_id = message.document.file_id
+
+        file_id = (
+            message.document.file_id
+        )
+
         file_type = "document"
-        size = message.document.file_size
+
+        size = (
+            message.document.file_size
+        )
 
     s["items"].append({
+
         "file_id": file_id,
         "type": file_type,
         "size": size
+
     })
 
     text = (
+
         "📤 Uploading...\n\n"
+
         f"🎥 {s['video']} | "
         f"🖼 {s['photo']} | "
         f"📁 {s['document']}\n"
+
         f"📦 Total: {len(s['items'])}"
+
     )
 
     try:
 
         await message.bot.edit_message_text(
+
             chat_id=user_id,
+
             message_id=s["msg_id"],
+
             text=text,
+
             reply_markup=upload_kb()
+
         )
 
-    except:
+    except Exception:
+
         pass
 
 # =========================
