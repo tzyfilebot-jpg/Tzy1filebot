@@ -1101,6 +1101,8 @@ async def stat_cmd(
 # BROADCAST
 # =========================
 
+import asyncio
+
 @router.message(
     F.text.startswith("/broadcast")
 )
@@ -1138,6 +1140,7 @@ async def broadcast_cmd(
         )
 
     sent = 0
+    failed = 0
 
     for user in users:
 
@@ -1150,20 +1153,23 @@ async def broadcast_cmd(
 
             sent += 1
 
-        await asyncio.sleep(
+            await asyncio.sleep(
+                0.05
+            )
 
-            0.05
+        except Exception:
 
-        )
+            failed += 1
 
-    except:
+            pass
 
-        pass
     await message.answer(
-        f"✅ Broadcast selesai\n\n"
-        f"📤 Terkirim: {sent}"
-    )
 
+        f"✅ Broadcast selesai\n\n"
+        f"📤 Terkirim: {sent}\n"
+        f"❌ Gagal: {failed}"
+
+    )
 # =========================
 # HELP TEXT
 # =========================
