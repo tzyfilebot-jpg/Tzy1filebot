@@ -100,7 +100,167 @@ async def init_db():
 
 upload_sessions = {}
 user_states = {}
+# =========================
+# ROUTER
+# =========================
 
+router = Router()
+
+# =========================
+# KEYBOARD
+# =========================
+
+def get_keyboard(is_admin=False):
+
+    rows = [
+        [
+            KeyboardButton(text="📤 Up File"),
+            KeyboardButton(text="📥 Get File")
+        ],
+        [
+            KeyboardButton(text="👤 Account"),
+            KeyboardButton(text="💎 VIP")
+        ]
+    ]
+
+    if is_admin:
+
+        rows.append([
+            KeyboardButton(text="/stat")
+        ])
+
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True
+    )
+
+# =========================
+# FORCE SUB
+# =========================
+
+async def check_force_sub(
+    bot: Bot,
+    user_id: int,
+    channel: str
+):
+
+    try:
+
+        ch = channel.replace("@", "")
+
+        member = await bot.get_chat_member(
+            f"@{ch}",
+            user_id
+        )
+
+        return member.status in [
+            "member",
+            "administrator",
+            "creator"
+        ]
+
+    except TelegramBadRequest:
+
+        return False
+
+
+def force_kb(channel):
+
+    ch = channel.replace("@", "")
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📢 Join",
+                    url=f"https://t.me/{ch}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Check",
+                    callback_data="check_sub"
+                )
+            ]
+        ]
+    )
+# =========================
+# START
+# =========================
+
+@router.message(F.text == "/start")
+async def start(
+    message: Message,
+    bot: Bot
+):
+
+    user = message.from_user
+
+    await add_user(
+        user.id,
+        user.username or "none",
+        user.full_name
+    )
+
+    if FORCE_CHANNEL:
+
+        ok = await check_force_sub(
+            bot,
+            user.id,
+            FORCE_CHANNEL
+        )
+
+        if not ok:
+
+            return await message.answer(
+                "⚠ Join channel dulu",
+                reply_markup=force_kb(
+                    FORCE_CHANNEL
+                )
+            )
+
+    await message.answer(
+        "🔥 Menu aktif",
+        reply_markup=get_keyboard(
+            is_admin(
+                user.id
+            )
+        )
+    )
+
+@router.callback_query(
+    F.data == "check_sub"
+)
+async def check_sub(
+    call: CallbackQuery,
+    bot: Bot
+):
+
+    ok = await check_force_sub(
+        bot,
+        call.from_user.id,
+        FORCE_CHANNEL
+    )
+
+    if not ok:
+
+        return await call.answer(
+            "Belum join",
+            show_alert=True
+        )
+
+    await call.message.edit_text(
+        "✅ Verified"
+    )
+
+    await call.message.answer(
+        "Menu aktif",
+        reply_markup=get_keyboard(
+            is_admin(
+                call.from_user.id
+            )
+        )
+    )
 # =========================
 # UP FILE INIT
 # =========================
@@ -387,7 +547,10 @@ async def load_media(code: str):
 # RECEIVE CODE
 # =========================
 
-@router.message(F.text)
+@router.message(
+    F.text &
+    ~F.text.startswith("/")
+)
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
@@ -954,6 +1117,138 @@ async def broadcast_cmd(
         f"📤 Terkirim: {sent}"
     )
 
+# =========================
+# HELP TEXT
+# =========================
+
+HELP_TEXT = """
+
+🔥 TZY FILE BOT — HELP MENU 🔥
+
+Selamat datang di TZY FILE BOT.
+Bot ini dibuat buat upload, simpan, dan ambil file pakai CODE.
+
+━━━━━━━━━━━━━━
+📤 UP FILE
+━━━━━━━━━━━━━━
+
+1. Tekan 📤 Up File
+2. Kirim foto / video / document
+3. Tekan ✅ DONE
+4. Bot generate CODE otomatis
+
+Catatan:
+• ❌ CANCEL = batalkan upload
+• Simpan CODE sendiri
+• Jangan upload lalu lupa DONE
+
+━━━━━━━━━━━━━━
+📥 GET FILE
+━━━━━━━━━━━━━━
+
+1. Tekan 📥 Get File
+2. Kirim CODE
+3. Bot kirim file otomatis
+4. Gunakan pagination kalau file banyak
+
+Kalau muncul:
+❌ CODE tidak ditemukan
+
+Cek:
+• Salah ketik
+• CODE invalid
+• Salah input
+
+━━━━━━━━━━━━━━
+👤 ACCOUNT
+━━━━━━━━━━━━━━
+
+Menampilkan:
+
+🆔 Telegram ID
+👤 Nama akun
+🔗 Username
+
+━━━━━━━━━━━━━━
+💎 VIP FEATURE
+━━━━━━━━━━━━━━
+
+🔥 Unlimited Upload
+🔥 Faster Access
+🔥 Priority Queue
+🔥 Premium Support
+
+━━━━━━━━━━━━━━
+📋 RULE BOT
+━━━━━━━━━━━━━━
+
+✅ Gunakan sewajarnya
+✅ Simpan CODE
+✅ Ikuti aturan
+
+❌ Spam
+❌ Flood
+❌ Abuse system
+
+━━━━━━━━━━━━━━
+🛠 ADMIN COMMAND
+━━━━━━━━━━━━━━
+
+/stat
+→ statistik bot
+
+/broadcast pesan
+→ broadcast user
+
+/addadmin ID
+→ tambah admin
+
+━━━━━━━━━━━━━━
+⚠ COMMON ERROR
+━━━━━━━━━━━━━━
+
+CODE tidak ditemukan
+→ cek code
+
+Upload kosong
+→ upload dulu
+
+Not allowed
+→ bukan admin
+
+━━━━━━━━━━━━━━
+💀 SAVAGE MODE
+━━━━━━━━━━━━━━
+
+• Bot baca command, bukan pikiran 😌
+• Salah ketik bukan bug
+• Simpan CODE sebelum hilang
+• Tombol ada buat dipencet 😏
+
+━━━━━━━━━━━━━━
+🚀 BOT READY
+━━━━━━━━━━━━━━
+
+"""
+
+# =========================
+# HELP HANDLER
+# =========================
+
+@router.message(F.text == "/help")
+async def help_cmd(message: Message):
+
+    await message.answer(
+        HELP_TEXT
+    )
+
+
+@router.message(F.text == "❓ Help")
+async def help_button(message: Message):
+
+    await message.answer(
+        HELP_TEXT
+    )
 # =========================
 # STARTUP
 # =========================
