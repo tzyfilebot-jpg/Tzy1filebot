@@ -253,18 +253,10 @@ async def cancel_upload(call: CallbackQuery):
 # GET FILE SYSTEM
 # =========================
 
-@dp.message()
+@dp.message(F.text.regexp(r"^tzy_"))
 async def get_file(message: Message):
 
-    text = message.text
-    if not text:
-        return
-
-    text = text.strip()
-
-    if not text.startswith("tzy_"):
-        return
-
+    text = message.text.strip()
     code = text
 
     now = time.time()
@@ -309,23 +301,28 @@ async def render_page(uid):
     index = session["index"]
     chat_id = session["chat_id"]
 
+    if not pages:
+        return
+
     text = f"📄 PAGE {index+1}/{len(pages)}\n\n"
 
     for m in pages[index]:
-        text += f"📎 {m['media_type'].upper()}\n"
+        text += f"📎 {m.get('media_type','FILE').upper()}\n"
 
-    await bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=page_message_id[uid],
-        text=text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⬅ Prev", callback_data="prev_page"),
-                InlineKeyboardButton(text="Next ➡", callback_data="next_page")
-            ]
-        ])
-    )
-
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=page_message_id[uid],
+            text=text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="⬅ Prev", callback_data="prev_page"),
+                    InlineKeyboardButton(text="Next ➡", callback_data="next_page")
+                ]
+            ])
+        )
+    except:
+        pass
 # =========================
 # NEXT PAGE
 # =========================
