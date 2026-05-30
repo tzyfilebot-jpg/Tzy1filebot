@@ -249,6 +249,28 @@ async def cancel_upload(call: CallbackQuery):
     upload_session.pop(uid, None)
 
     await call.message.edit_text("⚰️ Upload dibatalkan.")
+
+# =========================
+
+# GET FILE MENU (INI TARUH DI SINI)
+
+# =========================
+
+@dp.callback_query(F.data == "getfile")
+
+async def getfile_menu(call: CallbackQuery):
+
+    await call.message.edit_text(
+
+        "📥 GET FILE MODE\n\n"
+
+        "Kirim code seperti:\n"
+
+        "tzy_xxx_5v_3p_1d"
+
+    )
+
+    await call.answer()
 # =========================
 # GET FILE SYSTEM
 # =========================
