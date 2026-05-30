@@ -120,6 +120,9 @@ def get_keyboard(is_admin=False):
         [
             KeyboardButton(text="👤 Account"),
             KeyboardButton(text="💎 VIP")
+        ],
+        [
+            KeyboardButton(text="❓ Help")
         ]
     ]
 
@@ -133,7 +136,6 @@ def get_keyboard(is_admin=False):
         keyboard=rows,
         resize_keyboard=True
     )
-
 # =========================
 # FORCE SUB
 # =========================
@@ -209,6 +211,10 @@ async def start(
             user.id,
             FORCE_CHANNEL
         )
+        if not FORCE_CHANNEL:
+    return await call.answer(
+        "Force sub off"
+    )
 
         if not ok:
 
@@ -286,8 +292,9 @@ async def up_file(message: Message):
 
     user_id = message.from_user.id
 
-    user_states[user_id] = "upload"
-
+    user_states[user_id] = {
+    "mode": "upload"
+}
     upload_sessions[user_id] = {
         "video": 0,
         "photo": 0,
@@ -311,10 +318,17 @@ async def handle_media(message: Message):
 
     user_id = message.from_user.id
 
-    if user_states.get(user_id) != "upload":
-        return
+    state = user_states.get(user_id)
 
-    s = upload_sessions[user_id]
+if not state:
+    return
+
+if state.get("mode") != "upload":
+    return
+    s = upload_sessions.get(user_id)
+
+if not s:
+    return
 
     if message.photo:
 
@@ -535,14 +549,19 @@ async def load_media(code: str):
 
         return await conn.fetch(
             """
-            SELECT file_id, file_type
+            SELECT
+                file_id,
+                file_type,
+                file_size
+
             FROM medias
+
             WHERE code=$1
+
             ORDER BY id ASC
             """,
             code
         )
-
 # =========================
 # RECEIVE CODE
 # =========================
@@ -631,13 +650,13 @@ def build_kb(
             [
 
                 InlineKeyboardButton(
-                    text="📢 Update",
-                    url=f"https://t.me/{UPDATE_CHANNEL.replace('@','')}"
+                    text="📢 JOIN CHANNEL",
+                    url="https://t.me/+slzhVF3Lev0zZTRh"
                 ),
 
                 InlineKeyboardButton(
-                    text="🔔 Notification",
-                    url=f"https://t.me/{NOTIFICATION_CHANNEL.replace('@','')}"
+                    text="💬 GROUP CHAT",
+                    url="https://t.me/gcbotkx"
                 )
 
             ]
@@ -645,7 +664,6 @@ def build_kb(
         ]
 
     )
-
 # =========================
 # SEND PAGE
 # =========================
@@ -676,11 +694,17 @@ async def send_page(
 
     text = (
 
-        f"📦 CODE: {state['code']}\n"
-        f"📄 Page {page+1}/{total_pages}\n"
-        f"🔒 WATERMARK: @YourBotName"
+    f"📦 CODE: {state['code']}\n"
 
-    )
+    f"📄 Halaman saat ini: {page+1}/{total_pages}\n"
+
+    f"📁 Media: {current_media}-{min(end,total_media)} / {total_media}\n"
+
+    f"💾 Total Size: {size_mb} MB\n"
+
+    f"🔒 Powered By TZY FILE BOT"
+
+)
 
     if len(chunk) == 1:
 
@@ -1108,10 +1132,15 @@ async def broadcast_cmd(
 
             sent += 1
 
-        except:
+        await asyncio.sleep(
 
-            pass
+            0.05
 
+        )
+
+    except:
+
+        pass
     await message.answer(
         f"✅ Broadcast selesai\n\n"
         f"📤 Terkirim: {sent}"
@@ -1275,8 +1304,9 @@ async def main():
 
     finally:
 
-        await bot.session.close()
+    await db_pool.close()
 
+    await bot.session.close()
 # =========================
 # RUN
 # =========================
