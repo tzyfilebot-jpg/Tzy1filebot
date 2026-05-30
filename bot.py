@@ -6,6 +6,7 @@ import os
 import secrets
 import string
 import asyncpg
+import time
 
 from dotenv import load_dotenv
 
@@ -100,6 +101,8 @@ async def init_db():
 
 upload_sessions = {}
 user_states = {}
+last_edit_time = {}
+
 # =========================
 # ROUTER
 # =========================
@@ -342,12 +345,15 @@ async def handle_media(message: Message):
     state = user_states.get(user_id)
     s = upload_sessions.get(user_id)
 
-    # SAFE CHECK
     if not state or state.get("mode") != "upload":
         return
 
     if not s or "msg_id" not in s:
         return
+
+    # =========================
+    # AMBIL FILE
+    # =========================
 
     if message.photo:
 
@@ -370,11 +376,39 @@ async def handle_media(message: Message):
         size = message.document.file_size or 0
         s["document"] += 1
 
+    # =========================
+    # SIMPAN
+    # =========================
+
     s["items"].append({
         "file_id": file_id,
         "type": file_type,
         "size": size
     })
+
+    # =========================
+    # AUTO DELETE USER MEDIA
+    # =========================
+    try:
+        await message.delete()
+    except:
+        pass
+
+    # =========================
+    # THROTTLE EDIT (ANTI FLOOD)
+    # =========================
+
+    now = time.time()
+    last = last_edit_time.get(user_id, 0)
+
+    if now - last < 1.0:
+        return  # skip update kalau terlalu cepat
+
+    last_edit_time[user_id] = now
+
+    # =========================
+    # UPDATE TEXT
+    # =========================
 
     text = (
         "📤 Uploading...\n\n"
