@@ -1,16 +1,21 @@
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+CHANNEL_DB = os.getenv("CHANNEL_DB")
 
-DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID"))
+OWNER_ID = int(os.getenv("OWNER_ID", 0))
 
-OWNER_ID = int(os.getenv("OWNER_ID"))
+ADMINS = set(
+    int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()
+)
 
+FORCE_CHANNEL = os.getenv("FORCE_CHANNEL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL")
-NOTIF_CHANNEL = os.getenv("NOTIF_CHANNEL")
+NOTIFICATION_CHANNEL = os.getenv("NOTIFICATION_CHANNEL")
+
+VIP_LINK = os.getenv("VIP_LINK")
