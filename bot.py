@@ -539,9 +539,9 @@ async def get_file_start(message: Message):
     }
 
     await message.answer(
-        "📥 Kirim CODE untuk mengambil file"
+        "📥 Kirim CODE untuk ambil file kamu\n\n"
+        "⚡ Cepetan Cok..."
     )
-
 # =========================
 # LOAD DATA FROM DB
 # =========================
@@ -549,18 +549,11 @@ async def get_file_start(message: Message):
 async def load_media(code: str):
 
     async with db_pool.acquire() as conn:
-
         return await conn.fetch(
             """
-            SELECT
-                file_id,
-                file_type,
-                file_size
-
+            SELECT file_id, file_type, file_size
             FROM medias
-
             WHERE code=$1
-
             ORDER BY id ASC
             """,
             code
@@ -571,60 +564,33 @@ async def load_media(code: str):
 
 @router.message(
     F.text &
-    ~F.text.startswith("/") &
-    ~F.text.in_([
-        "📤 Up File",
-        "📥 Get File",
-        "👤 Account",
-        "💎 VIP",
-        "❓ Help"
-    ])
+    ~F.text.startswith("/")
 )
-async def receive_code(
-    message: Message
-):
+async def receive_code(message: Message):
 
     user_id = message.from_user.id
 
-    state = user_states.get(
-        user_id
-    )
+    state = user_states.get(user_id)
 
-    if not state:
-
-        return
-
-    if state.get("mode") != "getfile":
-
+    if not state or state.get("mode") != "getfile":
         return
 
     code = message.text.strip()
 
-    data = await load_media(
-        code
-    )
+    data = await load_media(code)
 
     if not data:
-
-        await message.answer(
-            "❌ CODE tidak ditemukan"
-        )
-
+        await message.answer("❌ CODE tidak ditemukan atau sudah expired")
         return
 
     user_states[user_id] = {
-
         "mode": "view",
         "code": code,
         "page": 0,
         "data": data
-
     }
 
-    await send_page(
-        message,
-        user_id
-    )
+    await send_page(message, user_id)
 # =========================
 # BUILD KEYBOARD
 # =========================
