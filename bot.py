@@ -9,7 +9,7 @@ import asyncpg
 
 from dotenv import load_dotenv
 
-from aiogram import Bot, Router, F
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message, CallbackQuery,
     ReplyKeyboardMarkup, KeyboardButton,
