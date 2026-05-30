@@ -1,0 +1,4 @@
+aiogram==3.20.0
+supabase
+python-dotenv
+aiohttp
