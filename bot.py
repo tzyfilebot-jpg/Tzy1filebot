@@ -2,11 +2,35 @@
 # IMPORT
 # =========================
 
-# import os
-# import asyncio
-# import asyncpg
-# from aiogram import Bot, Dispatcher
+import os
+import re
+import json
+import asyncio
+import secrets
+import string
+from datetime import datetime
 
+import asyncpg
+from dotenv import load_dotenv
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    FSInputFile,
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaDocument,
+)
+
+from aiogram.filters import Command, CommandStart
 # =========================
 # CONFIG
 # =========================
