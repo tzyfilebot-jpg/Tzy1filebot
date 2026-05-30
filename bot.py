@@ -2,64 +2,48 @@ import asyncio
 import time
 import secrets
 import re
-import sqlite3
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.filters import CommandStart
 
 from config import BOT_TOKEN, OWNER_ID, UPDATE_CHANNEL, DB_CHANNEL_ID
+
 from database import (
     add_user,
     is_admin,
     create_upload,
     add_media,
     get_media,
-    total_users,
-    get_all_users
+    get_all_users,
+    total_users
 )
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# =========================
-# STATE
-# =========================
+# ================= STATE =================
 upload_session = {}
-user_page = {}
 cooldown = {}
 broadcast_mode = set()
-user_cooldown = {}
-
-# =========================
-# SQLITE SAFE MODE (ANTI CORRUPT)
-# =========================
-def db_safe_exec(query, args=()):
-    conn = sqlite3.connect("database.db", timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    cur = conn.cursor()
-    cur.execute(query, args)
-    conn.commit()
-    conn.close()
 
 
-# =========================
-# FORCE JOIN
-# =========================
+# ================= FORCE JOIN =================
 async def check_join(user_id: int):
     try:
-        m = await bot.get_chat_member(UPDATE_CHANNEL, user_id)
-        return m.status in ["member", "administrator", "creator"]
+        res = await bot.get_chat_member(UPDATE_CHANNEL, user_id)
+        return res.status in ["member", "administrator", "creator"]
     except:
         return False
 
 
-# =========================
-# UI
-# =========================
-def main_menu():
+# ================= UI =================
+def menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 UPLOAD FILE", callback_data="upload")],
+        [InlineKeyboardButton(text="📤 UPLOAD", callback_data="upload")],
         [InlineKeyboardButton(text="📥 GET FILE", callback_data="getfile")],
         [
             InlineKeyboardButton(text="❓ HELP", callback_data="help"),
@@ -77,9 +61,13 @@ def upload_menu():
     ])
 
 
-# =========================
-# START
-# =========================
+def vip_btn():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔥 JOIN VIP", url=f"https://t.me/{OWNER_ID}")]
+    ])
+
+
+# ================= START =================
 @dp.message(CommandStart())
 async def start(message: Message):
 
@@ -88,33 +76,39 @@ async def start(message: Message):
 
     if not await check_join(u.id):
         return await message.answer(
-            "⛓ LOCKED\nJoin channel dulu!",
+            "⛓ AKSES TERKUNCI\nJoin channel dulu!",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton("JOIN CHANNEL", url=f"https://t.me/{UPDATE_CHANNEL.replace('@','')}")]
+                [InlineKeyboardButton(text="📢 JOIN CHANNEL", url=f"https://t.me/{UPDATE_CHANNEL.replace('@','')}")]
             ])
         )
 
-    await message.answer("🔥 SYSTEM ONLINE", reply_markup=main_menu())
+    await message.answer("🔥 FILE SYSTEM READY", reply_markup=menu())
 
 
-# =========================
-# CALLBACK
-# =========================
+# ================= CALLBACK =================
 @dp.callback_query()
 async def cb(call: CallbackQuery):
 
     uid = call.from_user.id
-    d = call.data
+    data = call.data
 
-    if d == "help":
+    if data == "help":
         return await call.message.answer(
-            "📌 GUIDE\n\nUPLOAD → kirim file\nDONE → simpan\nGET → pakai code"
+            "📌 CARA PAKAI:\n"
+            "- UPLOAD → kirim file\n"
+            "- DONE → simpan\n"
+            "- GET → kirim code"
         )
 
-    if d == "vip":
-        return await call.message.answer("💎 VIP ACTIVE SOON")
+    if data == "vip":
+        return await call.message.answer(
+            "💎 VIP PREMIUM\n"
+            "Rp 150.000 / $10 / RM45\n\n"
+            "✔ Unlimited upload\n✔ Fast access",
+            reply_markup=vip_btn()
+        )
 
-    if d == "upload":
+    if data == "upload":
         code = "tzy_" + secrets.token_hex(3)
 
         upload_session[uid] = {
@@ -125,140 +119,94 @@ async def cb(call: CallbackQuery):
             "active": True
         }
 
-        return await call.message.answer("📤 UPLOAD MODE ACTIVE", reply_markup=upload_menu())
+        return await call.message.answer("📤 UPLOAD MODE ON", reply_markup=upload_menu())
 
-    if d == "getfile":
-        return await call.message.answer("📥 SEND CODE tzy_xxx")
+    if data == "getfile":
+        return await call.message.answer("📥 SEND CODE (tzy_xxx)")
 
-    if d == "done":
+    if data == "done":
         if uid in upload_session:
             s = upload_session[uid]
-            s["active"] = False
-
-            code = s["code"]
-            create_upload(code, uid, s["video"] + s["photo"] + s["doc"], 0)
-
+            create_upload(s["code"], uid, s["video"] + s["photo"] + s["doc"], 0)
             del upload_session[uid]
+            return await call.message.answer(f"✅ SAVED\nCODE: {s['code']}")
 
-            return await call.message.answer(f"✅ SAVED {code}")
-
-    if d == "cancel":
+    if data == "cancel":
         upload_session.pop(uid, None)
         return await call.message.answer("❌ CANCELLED")
 
     await call.answer()
 
 
-# =========================
-# TEXT HANDLER (ANTI SPAM + QUEUE)
-# =========================
+# ================= TEXT =================
 @dp.message(F.text)
-async def text_handler(message: Message):
+async def text(message: Message):
 
     uid = message.from_user.id
-    text = message.text.strip()
+    txt = message.text.strip()
 
-    # ================= COOLDOWN GLOBAL =================
-    now = time.time()
-    if uid in user_cooldown and now - user_cooldown[uid] < 1:
-        return
-    user_cooldown[uid] = now
-
-    # ================= BROADCAST =================
+    # ===== BROADCAST =====
     if uid in broadcast_mode:
-        users = get_all_users()
-
-        batch = []
-        for u in users:
-            batch.append(u["user_id"])
-
-            if len(batch) >= 10:
-                await send_batch(batch, text)
-                batch = []
-                await asyncio.sleep(1)
-
-        if batch:
-            await send_batch(batch, text)
-
+        for u in get_all_users():
+            try:
+                await bot.send_message(u["user_id"], txt)
+            except:
+                pass
         broadcast_mode.remove(uid)
-        return await message.answer("📢 BROADCAST DONE")
+        return await message.answer("📢 SENT")
 
-
-    # ================= ADMIN DASHBOARD =================
-    if text == "/statistik":
+    # ===== ADMIN =====
+    if txt == "/statistik":
         if uid != OWNER_ID and not is_admin(uid):
             return
+        return await message.answer(f"👤 USERS: {total_users()}")
 
-        users = total_users()
-
-        bar = "█" * min(users // 10, 20)
-
-        return await message.answer(
-            f"📊 REALTIME DASHBOARD\n\n"
-            f"👤 USERS: {users}\n"
-            f"{bar}"
-        )
-
-    if text == "/broadcast":
+    if txt == "/broadcast":
         if uid != OWNER_ID and not is_admin(uid):
             return
-
         broadcast_mode.add(uid)
         return await message.answer("📢 SEND MESSAGE")
 
-
-    # ================= GET FILE =================
-    match = re.search(r"(tzy_[a-z0-9_]+)", text.lower())
+    # ===== GET FILE =====
+    match = re.search(r"(tzy_[a-z0-9_]+)", txt.lower())
     if match:
-
         code = match.group(1)
 
-        if code in cooldown and now - cooldown[code] < 5:
+        if code in cooldown and time.time() - cooldown[code] < 3:
             return await message.answer("⏳ COOLDOWN")
 
-        cooldown[code] = now
+        cooldown[code] = time.time()
 
         media = get_media(code)
+
         if not media:
             return await message.answer("❌ NOT FOUND")
 
-        pages = [media[i:i+5] for i in range(0, len(media), 5)]
+        for m in media:
+            await bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=DB_CHANNEL_ID,
+                message_id=m["message_id"]
+            )
 
-        user_page[uid] = {
-            "pages": pages,
-            "index": 0,
-            "chat_id": message.chat.id
-        }
+        return
 
-        return await render(uid)
-
-
-    # ================= DONE =================
-    if text.upper() == "DONE":
+    # ===== DONE / CANCEL =====
+    if txt.upper() == "DONE":
         if uid in upload_session:
-
             s = upload_session[uid]
-            s["active"] = False
-
-            code = s["code"]
-
-            create_upload(code, uid, s["video"] + s["photo"] + s["doc"], 0)
-
+            create_upload(s["code"], uid, s["video"] + s["photo"] + s["doc"], 0)
             del upload_session[uid]
+            return await message.answer(f"✅ SAVED\n{s['code']}")
 
-            return await message.answer(f"✅ SAVED {code}")
-
-
-    if text.upper() == "CANCEL":
+    if txt.upper() == "CANCEL":
         upload_session.pop(uid, None)
         return await message.answer("❌ CANCELLED")
 
 
-# =========================
-# MEDIA HANDLER (AUTO BACKUP)
-# =========================
+# ================= MEDIA =================
 @dp.message(F.content_type.in_({"video", "photo", "document"}))
-async def media_handler(message: Message):
+async def media(message: Message):
 
     uid = message.from_user.id
 
@@ -269,51 +217,25 @@ async def media_handler(message: Message):
     if not s["active"]:
         return
 
-    await bot.copy_message(
+    msg = await bot.copy_message(
         chat_id=DB_CHANNEL_ID,
         from_chat_id=message.chat.id,
         message_id=message.message_id
     )
 
-    add_media(s["code"], message.message_id, message.content_type, 0)
+    if message.content_type == "video":
+        s["video"] += 1
+    elif message.content_type == "photo":
+        s["photo"] += 1
+    else:
+        s["doc"] += 1
+
+    add_media(s["code"], msg.message_id, message.content_type, 0, 0)
 
     await message.answer("📤 UPLOADED")
 
 
-# =========================
-# SAFE SEND BATCH (FAST BROADCAST)
-# =========================
-async def send_batch(users, text):
-    for uid in users:
-        try:
-            await bot.send_message(uid, text)
-        except:
-            pass
-
-
-# =========================
-# RENDER
-# =========================
-async def render(uid):
-
-    s = user_page.get(uid)
-    if not s:
-        return
-
-    pages = s["pages"]
-    idx = max(0, min(s["index"], len(pages)-1))
-
-    text = f"📄 PAGE {idx+1}/{len(pages)}\n\n"
-
-    for m in pages[idx]:
-        text += f"📎 {m.get('media_type','FILE')}\n"
-
-    await bot.send_message(s["chat_id"], text)
-
-
-# =========================
-# RUN
-# =========================
+# ================= RUN =================
 async def main():
     await dp.start_polling(bot)
 
