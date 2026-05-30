@@ -168,29 +168,113 @@ async def get_stats():
 # KEYBOARDS
 # =========================
 
-# user keyboard
-# admin keyboard
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+def get_keyboard(is_admin: bool = False):
+    keyboard = [
+        [
+            KeyboardButton(text="📤 Up File"),
+            KeyboardButton(text="📥 Get File")
+        ],
+        [
+            KeyboardButton(text="👤 Account"),
+            KeyboardButton(text="💎 VIP")
+        ]
+    ]
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        is_persistent=True
+    )
 # =========================
 # SESSION CACHE
 # =========================
 
-# upload_sessions
-# user_states
-# broadcast_states
+upload_sessions = {}   # menyimpan media sementara saat UP FILE
+user_states = {}       # status user: idle / upload / getfile / broadcast
+broadcast_states = {}  # status admin saat broadcast aktif
 
 # =========================
 # FORCE SUB
 # =========================
 
-# check_force_sub()
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+
+async def check_force_sub(bot: Bot, user_id: int, channel: str) -> bool:
+    try:
+        if channel.startswith("@"):
+            channel = channel[1:]
+
+        member = await bot.get_chat_member(
+            chat_id=f"@{channel}",
+            user_id=user_id
+        )
+
+        return member.status in ("member", "administrator", "creator")
+
+    except TelegramBadRequest:
+        return False
+    except Exception:
+        return False
+
 
 # =========================
 # START
 # =========================
 
-# /start
+from aiogram import Router, F
+from aiogram.types import Message
 
+router = Router()
+
+from config import FORCE_CHANNEL, ADMINS
+from keyboards import get_keyboard  # kalau keyboard kamu di file terpisah
+
+@router.message(F.text == "/start")
+async def start_cmd(message: Message, bot: Bot):
+    user_id = message.from_user.id
+
+    is_joined = await check_force_sub(bot, user_id, FORCE_CHANNEL)
+
+    if not is_joined:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        if FORCE_CHANNEL.startswith("@"):
+            ch = FORCE_CHANNEL[1:]
+        else:
+            ch = FORCE_CHANNEL
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📢 Join Channel",
+                        url=f"https://t.me/{ch}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔄 Saya Sudah Join",
+                        callback_data="check_sub"
+                    )
+                ]
+            ]
+        )
+
+        await message.answer(
+            "⚠ Kamu harus join channel dulu sebelum pakai bot",
+            reply_markup=kb
+        )
+        return
+
+    is_admin = user_id in ADMINS
+
+    await message.answer(
+        "🔥 Menu Bot Aktif",
+        reply_markup=get_keyboard(is_admin)
+    )
 # =========================
 # UP FILE
 # =========================
