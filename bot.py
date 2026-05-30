@@ -2,53 +2,43 @@ import asyncio
 import time
 import secrets
 import re
-import hashlib
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.filters import CommandStart
 
 from config import BOT_TOKEN, OWNER_ID, DB_CHANNEL_ID
-from database import add_user, is_admin, create_upload, add_media, get_media, get_all_users
+from database import add_user, is_admin, create_upload, add_media, get_media, total_users
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # =========================
-# STATE (RAM CACHE ONLY)
+# STATE
 # =========================
 upload_session = {}
 user_page = {}
 cooldown = {}
 broadcast_mode = set()
-dashboard_msg = {}
-
-# =========================
-# SECURE CODE SYSTEM (PERMANENT READY)
-# =========================
-def gen_code():
-    raw = f"{time.time()}{secrets.token_hex(6)}"
-    return "tzy_" + hashlib.md5(raw.encode()).hexdigest()[:10]
 
 
 # =========================
-# MINI APP UI (PAGE SYSTEM)
+# UI (MINI APP STYLE)
 # =========================
-def menu(page=1):
-
-    if page == 1:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📤 UPLOAD FILE", callback_data="up")],
-            [InlineKeyboardButton(text="📥 GET FILE", callback_data="get")],
-            [InlineKeyboardButton(text="📊 DASHBOARD", callback_data="dash")],
-            [InlineKeyboardButton(text="❓ HELP", callback_data="help")],
-            [InlineKeyboardButton(text="💎 VIP", callback_data="vip")]
-        ])
-
-    if page == 2:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅ BACK MENU", callback_data="home")]
-        ])
+def main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📤 Up File", callback_data="upload"),
+            InlineKeyboardButton(text="📥 Get File", callback_data="getfile")
+        ],
+        [
+            InlineKeyboardButton(text="❓ Help", callback_data="help"),
+            InlineKeyboardButton(text="💎 VIP", callback_data="vip")
+        ]
+    ])
 
 
 # =========================
@@ -56,44 +46,39 @@ def menu(page=1):
 # =========================
 @dp.message(CommandStart())
 async def start(message: Message):
-
     u = message.from_user
     add_user(u.id, u.username, u.first_name)
 
     await message.answer(
-        "☠ MINI APP SYSTEM ONLINE\nFILE MANAGER ACTIVE",
-        reply_markup=menu(1)
+        "🔥 MINI FILE SYSTEM ONLINE\nPilih menu di bawah",
+        reply_markup=main_menu()
     )
 
 
 # =========================
-# CALLBACK ROUTER (MINI APP STYLE)
+# CALLBACK ROUTER
 # =========================
 @dp.callback_query()
-async def cb(call: CallbackQuery):
+async def router(call: CallbackQuery):
 
     uid = call.from_user.id
     data = call.data
 
-    # HOME
-    if data == "home":
-        await call.message.edit_text("☠ MAIN MENU", reply_markup=menu(1))
-
     # HELP
-    elif data == "help":
-        await call.message.answer(
+    if data == "help":
+        return await call.message.answer(
             "📌 UPLOAD → kirim file\n"
-            "📌 GET → pakai code\n"
-            "📌 DONE / CANCEL → kontrol upload"
+            "📌 GET → kirim code\n"
+            "📌 VIP → fitur premium"
         )
 
     # VIP
-    elif data == "vip":
-        await call.message.answer("💎 VIP SYSTEM OFF")
+    if data == "vip":
+        return await call.message.answer("💎 VIP belum aktif")
 
-    # UPLOAD START
-    elif data == "up":
-        code = gen_code()
+    # UPLOAD
+    if data == "upload":
+        code = "tzy_" + secrets.token_hex(3)
 
         upload_session[uid] = {
             "code": code,
@@ -103,107 +88,56 @@ async def cb(call: CallbackQuery):
             "active": True
         }
 
-        await call.message.answer(
-            "📤 UPLOAD MODE ACTIVE\nKirim file sekarang\n\nDONE / CANCEL"
+        return await call.message.answer(
+            "📤 UPLOAD MODE ACTIVE\nKirim file sekarang\nKetik DONE / CANCEL"
         )
 
     # GET FILE
-    elif data == "get":
-        await call.message.answer("📥 SEND CODE (tzy_...)")
-
-    # DASHBOARD (ADMIN ONLY)
-    elif data == "dash":
-
-        if uid != OWNER_ID and not is_admin(uid):
-            return await call.answer("NO ACCESS", show_alert=True)
-
-        users = len(get_all_users())
-
-        msg = await call.message.answer(
-            f"📊 LIVE DASHBOARD\n\n"
-            f"👤 USERS: {users}\n"
-            f"📦 ACTIVE UPLOAD: {len(upload_session)}\n"
-            f"📥 ACTIVE SESSIONS: {len(user_page)}"
-        )
-
-        dashboard_msg[uid] = msg.message_id
+    if data == "getfile":
+        return await call.message.answer("📥 Kirim code: tzy_xxx")
 
     await call.answer()
 
 
 # =========================
-# TEXT ROUTER (UPLOAD + GET + ADMIN CMD)
+# TEXT HANDLER
 # =========================
 @dp.message(F.text)
-async def text_router(message: Message):
+async def text_handler(message: Message):
 
     uid = message.from_user.id
     text = message.text.strip()
 
-    # =========================
-    # BROADCAST MODE
-    # =========================
+    # ================= BROADCAST =================
     if uid in broadcast_mode:
-        for u in get_all_users():
+        for u in range(total_users()):
             try:
-                await bot.send_message(u["user_id"], text)
+                await bot.send_message(u, text)
             except:
                 pass
-
         broadcast_mode.remove(uid)
-        return await message.answer("📢 BROADCAST SENT")
+        return await message.answer("📢 SENT")
 
-    # =========================
-    # ADMIN COMMANDS
-    # =========================
-    if text.startswith("/statistik"):
-        if uid != OWNER_ID and not is_admin(uid):
-            return await message.answer("NO ACCESS")
-
-        return await message.answer(f"👤 USERS: {len(get_all_users())}")
-
-    if text.startswith("/broadcast"):
-        if uid != OWNER_ID and not is_admin(uid):
-            return await message.answer("NO ACCESS")
-
-        msg = text.replace("/broadcast", "").strip()
-
-        if not msg:
-            return await message.answer("FORMAT: /broadcast pesan")
-
-        for u in get_all_users():
-            try:
-                await bot.send_message(u["user_id"], msg)
-            except:
-                pass
-
-        return await message.answer("📢 DONE")
-
-    # =========================
-    # DONE UPLOAD
-    # =========================
+    # ================= DONE =================
     if text.upper() == "DONE":
         if uid in upload_session:
             s = upload_session[uid]
             s["active"] = False
 
             code = s["code"]
+
             create_upload(code, uid, s["video"] + s["photo"] + s["doc"], 0)
 
-            upload_session.pop(uid, None)
+            del upload_session[uid]
 
-            return await message.answer(f"✅ SAVED\n🔑 {code}")
+            return await message.answer(f"✅ SAVED\n{code}")
 
-    # =========================
-    # CANCEL UPLOAD
-    # =========================
+    # ================= CANCEL =================
     if text.upper() == "CANCEL":
         upload_session.pop(uid, None)
         return await message.answer("❌ CANCELLED")
 
-    # =========================
-    # GET FILE SYSTEM
-    # =========================
+    # ================= GET FILE =================
     match = re.search(r"(tzy_[a-z0-9_]+)", text.lower())
     if not match:
         return
@@ -212,13 +146,13 @@ async def text_router(message: Message):
 
     now = time.time()
     if code in cooldown and now - cooldown[code] < 5:
-        return await message.answer("⏳ COOLDOWN")
+        return await message.answer("⏳ cooldown")
 
     cooldown[code] = now
 
     media = get_media(code)
     if not media:
-        return await message.answer("❌ INVALID CODE")
+        return await message.answer("❌ NOT FOUND")
 
     pages = [media[i:i+5] for i in range(0, len(media), 5)]
 
@@ -228,13 +162,11 @@ async def text_router(message: Message):
         "chat_id": message.chat.id
     }
 
-    msg = await message.answer("📥 LOADING FILE...")
-
-    await render(uid, msg.message_id)
+    await render(uid)
 
 
 # =========================
-# MEDIA HANDLER (UPLOAD SAVE)
+# MEDIA HANDLER (AUTO BACKUP DB CHANNEL)
 # =========================
 @dp.message(F.content_type.in_({"video", "photo", "document"}))
 async def media_handler(message: Message):
@@ -248,6 +180,7 @@ async def media_handler(message: Message):
     if not s["active"]:
         return
 
+    # 🔥 AUTO BACKUP TO DB CHANNEL (PERSISTENT)
     msg = await bot.copy_message(
         chat_id=DB_CHANNEL_ID,
         from_chat_id=message.chat.id,
@@ -267,9 +200,9 @@ async def media_handler(message: Message):
 
 
 # =========================
-# RENDER PAGE (SAFE UI)
+# RENDER PAGE
 # =========================
-async def render(uid, msg_id):
+async def render(uid):
 
     s = user_page.get(uid)
     if not s:
@@ -278,50 +211,41 @@ async def render(uid, msg_id):
     pages = s["pages"]
     idx = max(0, min(s["index"], len(pages)-1))
 
-    text = f"📄 FILE PAGE {idx+1}/{len(pages)}\n\n"
+    text = f"📄 PAGE {idx+1}/{len(pages)}\n\n"
 
     for m in pages[idx]:
         text += f"📎 {m.get('media_type','FILE')}\n"
 
-    try:
-        await bot.edit_message_text(
-            chat_id=s["chat_id"],
-            message_id=msg_id,
-            text=text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="⬅", callback_data="prev"),
-                    InlineKeyboardButton(text="➡", callback_data="next")
-                ]
-            ])
-        )
-    except:
-        pass
+    await bot.send_message(
+        s["chat_id"],
+        text
+    )
 
 
 # =========================
-# PAGINATION
+# ADMIN COMMANDS ONLY
 # =========================
-@dp.callback_query(F.data == "next")
-async def next_page(call: CallbackQuery):
-    s = user_page.get(call.from_user.id)
-    if s and s["index"] + 1 < len(s["pages"]):
-        s["index"] += 1
-        await render(call.from_user.id, page_msg.get(call.from_user.id, 0))
-    await call.answer()
+@dp.message(F.text == "/statistik")
+async def stats(message: Message):
+
+    if message.from_user.id != OWNER_ID and not is_admin(message.from_user.id):
+        return
+
+    await message.answer(f"📊 USERS: {total_users()}")
 
 
-@dp.callback_query(F.data == "prev")
-async def prev_page(call: CallbackQuery):
-    s = user_page.get(call.from_user.id)
-    if s and s["index"] > 0:
-        s["index"] -= 1
-        await render(call.from_user.id, page_msg.get(call.from_user.id, 0))
-    await call.answer()
+@dp.message(F.text == "/broadcast")
+async def broadcast(message: Message):
+
+    if message.from_user.id != OWNER_ID and not is_admin(message.from_user.id):
+        return
+
+    broadcast_mode.add(message.from_user.id)
+    await message.answer("📢 SEND MESSAGE")
 
 
 # =========================
-# RUN BOT
+# RUN
 # =========================
 async def main():
     await dp.start_polling(bot)
