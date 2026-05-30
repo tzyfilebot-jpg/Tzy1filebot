@@ -28,6 +28,7 @@ dp = Dispatcher()
 upload_session = {}
 user_page = {}
 cooldown = {}
+page_message_id = {}
 
 # =========================
 # KEYBOARD
@@ -158,7 +159,8 @@ async def upload_start(call: CallbackQuery):
 
     await call.message.edit_text(
         "📤 UPLOAD MODE AKTIF\n\n"
-        "Kirim media sekarang.\n",
+        "Kirim file sekarang.\n\n"
+        "Gunakan tombol di bawah:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ DONE", callback_data="done_upload"),
@@ -179,10 +181,10 @@ async def handle_media(message: Message):
     if uid not in upload_session:
         return
 
-    if not upload_session[uid].get("active"):
+    if not upload_session[uid]["active"]:
         return
 
-    session = upload_session[uid]
+    s = upload_session[uid]
 
     msg = await bot.copy_message(
         chat_id=DB_CHANNEL_ID,
@@ -193,22 +195,21 @@ async def handle_media(message: Message):
     t = message.content_type
 
     if t == "video":
-        session["video"] += 1
+        s["video"] += 1
     elif t == "photo":
-        session["photo"] += 1
+        s["photo"] += 1
     elif t == "document":
-        session["doc"] += 1
+        s["doc"] += 1
 
     add_media(
-        session["code"],
+        s["code"],
         msg.message_id,
         t,
         None,
         0
     )
-
 # =========================
-# DONE UPLOAD
+# DONE UPLOAD DAN CANCEL
 # =========================
 
 @dp.callback_query(F.data == "done_upload")
@@ -227,32 +228,27 @@ async def done_upload(call: CallbackQuery):
     create_upload(
         final_code,
         uid,
-        s['video'] + s['photo'] + s['doc'],
+        s["video"] + s["photo"] + s["doc"],
         0
     )
 
     del upload_session[uid]
 
     await call.message.edit_text(
-        "☠️ UPLOAD LOCKED\n\n"
-        f"🔑 CODE:\n{final_code}\n\n"
-        "Simpan baik-baik."
+        "☠️ FILE LOCKED\n\n"
+        f"🔑 {final_code}\n\n"
+        "Jangan hilang."
     )
 
-# =========================
-# CANCEL UPLOAD
-# =========================
 
 @dp.callback_query(F.data == "cancel_upload")
 async def cancel_upload(call: CallbackQuery):
 
     uid = call.from_user.id
 
-    if uid in upload_session:
-        del upload_session[uid]
+    upload_session.pop(uid, None)
 
     await call.message.edit_text("⚰️ Upload dibatalkan.")
-
 # =========================
 # GET FILE SYSTEM
 # =========================
@@ -286,20 +282,24 @@ async def get_file(message: Message):
     per_page = 5
     pages = [media[i:i+per_page] for i in range(0, len(media), per_page)]
 
-    user_page[message.from_user.id] = {
+    uid = message.from_user.id
+
+    user_page[uid] = {
         "pages": pages,
-        "index": 0
+        "index": 0,
+        "chat_id": message.chat.id
     }
 
-    await message.answer("📥 ACCESS GRANTED")
+    msg = await message.answer("📥 LOADING FILE...")
 
-    await send_page(message, message.from_user.id)
+    page_message_id[uid] = msg.message_id
 
+    await render_page(uid)
 # =========================
 # SEND PAGE
 # =========================
 
-async def send_page(message, uid):
+async def render_page(uid):
 
     session = user_page.get(uid)
     if not session:
@@ -307,16 +307,17 @@ async def send_page(message, uid):
 
     pages = session["pages"]
     index = session["index"]
+    chat_id = session["chat_id"]
+
+    text = f"📄 PAGE {index+1}/{len(pages)}\n\n"
 
     for m in pages[index]:
-        await bot.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=DB_CHANNEL_ID,
-            message_id=m["message_id"]
-        )
+        text += f"📎 {m['media_type'].upper()}\n"
 
-    await message.answer(
-        f"📄 PAGE {index+1}/{len(pages)}",
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=page_message_id[uid],
+        text=text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="⬅ Prev", callback_data="prev_page"),
@@ -343,8 +344,8 @@ async def next_page(call: CallbackQuery):
 
     session["index"] += 1
 
-    await call.message.delete()
-    await send_page(call.message, uid)
+    await render_page(uid)
+    await call.answer()
 
 # =========================
 # PREV PAGE
@@ -364,8 +365,8 @@ async def prev_page(call: CallbackQuery):
 
     session["index"] -= 1
 
-    await call.message.delete()
-    await send_page(call.message, uid)
+    await render_page(uid)
+    await call.answer()
 # =========================
 # RUN
 # =========================
