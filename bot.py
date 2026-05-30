@@ -204,26 +204,31 @@ async def start(
         user.full_name
     )
 
-    if FORCE_CHANNEL:
+    # kalau force sub dimatikan
+    if not FORCE_CHANNEL:
 
-        ok = await check_force_sub(
-            bot,
-            user.id,
-            FORCE_CHANNEL
+        return await message.answer(
+            "🔥 Menu aktif",
+            reply_markup=get_keyboard(
+                is_admin(user.id)
+            )
         )
-        if not FORCE_CHANNEL:
-    return await call.answer(
-        "Force sub off"
+
+    # cek join channel
+    ok = await check_force_sub(
+        bot,
+        user.id,
+        FORCE_CHANNEL
     )
 
-        if not ok:
+    if not ok:
 
-            return await message.answer(
-                "⚠ Join channel dulu",
-                reply_markup=force_kb(
-                    FORCE_CHANNEL
-                )
+        return await message.answer(
+            "⚠️ Join channel dulu sebelum pakai bot",
+            reply_markup=force_kb(
+                FORCE_CHANNEL
             )
+        )
 
     await message.answer(
         "🔥 Menu aktif",
@@ -234,6 +239,11 @@ async def start(
         )
     )
 
+
+# =========================
+# CHECK SUB
+# =========================
+
 @router.callback_query(
     F.data == "check_sub"
 )
@@ -241,6 +251,14 @@ async def check_sub(
     call: CallbackQuery,
     bot: Bot
 ):
+
+    # force sub OFF
+    if not FORCE_CHANNEL:
+
+        return await call.answer(
+            "Force sub OFF",
+            show_alert=True
+        )
 
     ok = await check_force_sub(
         bot,
@@ -251,7 +269,7 @@ async def check_sub(
     if not ok:
 
         return await call.answer(
-            "Belum join",
+            "❌ Kamu belum join channel",
             show_alert=True
         )
 
@@ -260,7 +278,7 @@ async def check_sub(
     )
 
     await call.message.answer(
-        "Menu aktif",
+        "🔥 Menu aktif",
         reply_markup=get_keyboard(
             is_admin(
                 call.from_user.id
