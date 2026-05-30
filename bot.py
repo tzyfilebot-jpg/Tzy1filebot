@@ -144,11 +144,7 @@ def get_keyboard(is_admin=False):
         ]
     ]
 
-    if is_admin:
-
-        rows.append([
-            KeyboardButton(text="/stat")
-        ])
+    
 
     return ReplyKeyboardMarkup(
         keyboard=rows,
@@ -651,42 +647,60 @@ async def load_media(code: str):
 
 @router.message(
     F.text &
-    ~F.text.startswith("/")
+    ~F.text.startswith("/") &
+    ~F.text.in_([
+        "📤 Up File",
+        "📥 Get File",
+        "👤 Account",
+        "💎 VIP",
+        "❓ Help"
+    ])
 )
-async def receive_code(message: Message):
+async def receive_code(
+    message: Message
+):
 
     user_id = message.from_user.id
 
-    state = user_states.get(user_id)
+    state = user_states.get(
+        user_id
+    )
 
     if not state:
+
         return
 
     if state.get("mode") != "getfile":
+
         return
 
     code = message.text.strip()
 
-    data = await load_media(code)
+    data = await load_media(
+        code
+    )
 
     if not data:
+
         await message.answer(
             "❌ CODE tidak ditemukan"
         )
+
         return
 
     user_states[user_id] = {
+
         "mode": "view",
         "code": code,
         "page": 0,
         "data": data
+
     }
 
     await send_page(
         message,
         user_id
     )
-
 # =========================
 # BUILD KEYBOARD
 # =========================
