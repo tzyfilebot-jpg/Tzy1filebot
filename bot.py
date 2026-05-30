@@ -1328,9 +1328,13 @@ async def main():
 
     finally:
 
-    await db_pool.close()
+        if db_pool:
 
-    await bot.session.close()
+            await db_pool.close()
+
+        await bot.session.close()
+
+
 # =========================
 # RUN
 # =========================
