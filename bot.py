@@ -314,8 +314,9 @@ async def up_file(message: Message):
     user_id = message.from_user.id
 
     user_states[user_id] = {
-    "mode": "upload"
-}
+        "mode": "upload"
+    }
+
     upload_sessions[user_id] = {
         "video": 0,
         "photo": 0,
@@ -324,127 +325,79 @@ async def up_file(message: Message):
     }
 
     msg = await message.answer(
-        "📤 Upload mode aktif",
+        "📤 Upload mode aktif\n\nKirim media lalu tekan DONE",
         reply_markup=upload_kb()
     )
 
     upload_sessions[user_id]["msg_id"] = msg.message_id
-
 # =========================
 # MEDIA HANDLER
 # =========================
 
-@router.message(
-    F.photo | F.video | F.document
-)
-async def handle_media(
-    message: Message
-):
+@router.message(F.photo | F.video | F.document)
+async def handle_media(message: Message):
 
     user_id = message.from_user.id
 
-    state = user_states.get(
-        user_id
-    )
+    state = user_states.get(user_id)
 
     if not state:
-
         return
 
-    if state != "upload":
-
+    if state.get("mode") != "upload":
         return
 
-    s = upload_sessions.get(
-        user_id
-    )
+    s = upload_sessions.get(user_id)
 
     if not s:
-
         return
 
     if message.photo:
 
         s["photo"] += 1
-
-        file_id = (
-            message.photo[-1]
-            .file_id
-        )
-
+        file_id = message.photo[-1].file_id
         file_type = "photo"
-
-        size = (
-            message.photo[-1]
-            .file_size
-        )
+        size = message.photo[-1].file_size or 0
 
     elif message.video:
 
         s["video"] += 1
-
-        file_id = (
-            message.video.file_id
-        )
-
+        file_id = message.video.file_id
         file_type = "video"
-
-        size = (
-            message.video.file_size
-        )
+        size = message.video.file_size or 0
 
     else:
 
         s["document"] += 1
-
-        file_id = (
-            message.document.file_id
-        )
-
+        file_id = message.document.file_id
         file_type = "document"
-
-        size = (
-            message.document.file_size
-        )
+        size = message.document.file_size or 0
 
     s["items"].append({
-
         "file_id": file_id,
         "type": file_type,
         "size": size
-
     })
 
     text = (
-
         "📤 Uploading...\n\n"
-
-        f"🎥 {s['video']} | "
-        f"🖼 {s['photo']} | "
-        f"📁 {s['document']}\n"
-
-        f"📦 Total: {len(s['items'])}"
-
+        f"🎥 Video : {s['video']}\n"
+        f"🖼 Photo : {s['photo']}\n"
+        f"📁 Doc : {s['document']}\n"
+        f"📦 Total : {len(s['items'])}"
     )
 
     try:
 
         await message.bot.edit_message_text(
-
             chat_id=user_id,
-
             message_id=s["msg_id"],
-
             text=text,
-
             reply_markup=upload_kb()
-
         )
 
     except Exception:
-
         pass
-
 # =========================
 # GENERATE CODE
 # =========================
