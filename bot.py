@@ -340,38 +340,35 @@ async def handle_media(message: Message):
     user_id = message.from_user.id
 
     state = user_states.get(user_id)
-
-    if not state:
-        return
-
-    if state.get("mode") != "upload":
-        return
-
     s = upload_sessions.get(user_id)
 
-    if not s:
+    # SAFE CHECK
+    if not state or state.get("mode") != "upload":
+        return
+
+    if not s or "msg_id" not in s:
         return
 
     if message.photo:
 
-        s["photo"] += 1
         file_id = message.photo[-1].file_id
         file_type = "photo"
         size = message.photo[-1].file_size or 0
+        s["photo"] += 1
 
     elif message.video:
 
-        s["video"] += 1
         file_id = message.video.file_id
         file_type = "video"
         size = message.video.file_size or 0
+        s["video"] += 1
 
     else:
 
-        s["document"] += 1
         file_id = message.document.file_id
         file_type = "document"
         size = message.document.file_size or 0
+        s["document"] += 1
 
     s["items"].append({
         "file_id": file_id,
@@ -388,15 +385,13 @@ async def handle_media(message: Message):
     )
 
     try:
-
         await message.bot.edit_message_text(
             chat_id=user_id,
             message_id=s["msg_id"],
             text=text,
             reply_markup=upload_kb()
         )
-
-    except Exception:
+    except:
         pass
 # =========================
 # GENERATE CODE
