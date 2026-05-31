@@ -653,15 +653,15 @@ async def render_first_page(message: Message, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # 1. text + tombol
+    # 1. kirim text + tombol
     await message.answer(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
 
-    # 2. media (first load only)
+    # 2. kirim media (FIRST LOAD ONLY)
     try:
-        await send_media(message.chat.id, chunk)
+        await send_media(message.bot, message.chat.id, chunk)
     except Exception as e:
         print("MEDIA ERROR:", e)
 # =========================
@@ -818,11 +818,14 @@ async def render_page(call: CallbackQuery, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # 🔥 ONLY UPDATE TEXT + BUTTON
-    await call.message.edit_text(
-        text,
-        reply_markup=build_kb(user_id, page, total_pages)
-    )
+    # 🔥 ONLY UPDATE TEXT + BUTTON (NO MEDIA HERE)
+    try:
+        await call.message.edit_text(
+            text,
+            reply_markup=build_kb(user_id, page, total_pages)
+        )
+    except Exception as e:
+        print("EDIT ERROR:", e)
 
     await call.answer()
 # ======================
