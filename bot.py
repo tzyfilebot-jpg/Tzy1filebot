@@ -637,12 +637,14 @@ async def auto_delete(message, delay: int):
         await message.delete()
     except:
         pass
-        
+
+
 COOLDOWN_MSGS = [
     "⏳ Slow down bro...\n5 detik aja gak sabar?",
     "⏳ Global lock aktif\nJangan spam, bot bukan dewa 😌",
     "⏳ Santai dulu, server gak lari 😏"
 ]
+
 
 def check_cooldown(cache: dict, key, limit: int):
     now = time.time()
@@ -653,8 +655,10 @@ def check_cooldown(cache: dict, key, limit: int):
 
     cache[key] = now
     return True, 0
+
+
 # =========================
-# SEND PAGE FIXED
+# SEND PAGE FIXED (STABLE)
 # =========================
 async def send_page(message: Message, user_id: int):
 
@@ -679,7 +683,7 @@ async def send_page(message: Message, user_id: int):
         warn = await message.answer(
             f"{random.choice(COOLDOWN_MSGS)}\n⏳ sisa {int(remain)} detik"
         )
-        asyncio.create_task(auto_delete(warn, random.rendint(2, 4)))
+        asyncio.create_task(auto_delete(warn, random.randint(2, 4)))  # FIX TYPO
         return
 
     # =========================
@@ -706,13 +710,19 @@ async def send_page(message: Message, user_id: int):
     page_history.setdefault(user_id, set()).add(page)
 
     # =========================
-    # PAGINATION
+    # PAGINATION SAFE
     # =========================
     start = page * page_size
     chunk = data[start:start + page_size]
 
     total_pages = (len(data) + page_size - 1) // page_size
     total_media = len(data)
+
+    if not chunk:
+        return await message.answer(
+            "❌ Data kosong di page ini",
+            reply_markup=build_kb(user_id, page, total_pages)
+        )
 
     size_mb = round(
         sum(x["file_size"] for x in data) / (1024 * 1024),
@@ -727,6 +737,9 @@ async def send_page(message: Message, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
+    # =========================
+    # MEDIA GROUP
+    # =========================
     media_group = []
 
     for media in chunk:
@@ -738,86 +751,18 @@ async def send_page(message: Message, user_id: int):
             media_group.append(InputMediaDocument(media=media["file_id"]))
 
     try:
-        await message.answer_media_group(media_group)
+        if media_group:
+            await message.answer_media_group(media_group)
     except:
-        for m in chunk:
-            await send_single(message, m, text, page, total_pages, True)
+        pass
 
+    # =========================
+    # ⚡ TOMBOL WAJIB DI SINI
+    # =========================
     await message.answer(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
-# =========================
-# PAGINATION
-# =========================
-
-@router.callback_query(F.data.in_(["next", "prev"]))
-async def paginate(call: CallbackQuery):
-
-    user_id = call.from_user.id
-    state = user_states.get(user_id)
-
-    if not state or state.get("mode") != "view":
-        return
-
-    # =========================
-    # COOLDOWN TAMBAHAN (BIAR TOMBOL GAK SPAM)
-    # =========================
-    ok, remain = check_cooldown(
-        cooldown.setdefault("global", {}),
-        user_id,
-        2
-    )
-
-    if not ok:
-        await call.answer(
-            random.choice(COOLDOWN_MSGS),
-            show_alert=True
-        )
-        return
-
-    total_pages = (len(state["data"]) + 4) // 5
-
-    if call.data == "next":
-        if state["page"] < total_pages - 1:
-            state["page"] += 1
-    else:
-        if state["page"] > 0:
-            state["page"] -= 1
-
-    await call.message.delete()
-    await send_page(call.message, user_id)
-# =========================
-# PAGE SELECT
-# =========================
-
-@router.callback_query(
-    F.data.startswith("page:")
-)
-async def select_page(
-    call: CallbackQuery
-):
-
-    user_id = call.from_user.id
-
-    state = user_states.get(user_id)
-
-    if not state:
-        return
-
-    page = int(
-        call.data.split(":")[1]
-    )
-
-    state["page"] = page
-
-    await call.message.delete()
-
-    await send_page(
-        call.message,
-        user_id
-    )
-
 # =========================
 # ADD USER FUNCTION
 # =========================
