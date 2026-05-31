@@ -578,14 +578,22 @@ async def load_media(code: str):
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT file_id, file_type, file_size
+            SELECT file_id, file_type, COALESCE(file_size, 0) AS file_size
             FROM medias
             WHERE code=$1
             ORDER BY id ASC
             """,
             code
         )
-        return [dict(r) for r in rows]
+
+        return [
+            {
+                "file_id": r["file_id"],
+                "file_type": r["file_type"] or "document",
+                "file_size": r["file_size"] or 0
+            }
+            for r in rows
+        ]
 # =========================
 # GETFILE
 # =========================
@@ -594,17 +602,17 @@ async def load_media(code: str):
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
-    text = message.text or ""
+    text = (message.text or "").strip()
 
     state = user_states.get(user_id)
     if not state or state.get("mode") != "getfile":
         return
 
-    match = re.search(r"CODE:\s*(\S+)", text)
+    match = re.search(r"CODE:\s*([a-zA-Z0-9_]+)", text)
     if not match:
         return await message.answer("❌ CODE tidak ditemukan")
 
-    code = match.group(1)
+    code = match.group(1).strip()
 
     data = await load_media(code)
     if not data:
@@ -621,8 +629,13 @@ async def receive_code(message: Message):
 
 async def render_first_page(message: Message, user_id: int):
 
-    state = user_states[user_id]
+    state = user_states.get(user_id)
+    if not state:
+        return await message.answer("Session expired")
+
     data = state["data"]
+    if not data:
+        return await message.answer("❌ Tidak ada media")
 
     page = 0
     page_size = 5
@@ -640,13 +653,17 @@ async def render_first_page(message: Message, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
+    # 1. text + tombol
     await message.answer(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
 
-    # kirim media hanya di first load
-    await send_media(message.chat.id, chunk)
+    # 2. media (first load only)
+    try:
+        await send_media(message.chat.id, chunk)
+    except Exception as e:
+        print("MEDIA ERROR:", e)
 # =========================
 # BUILD KEYBOARD
 # =========================
@@ -655,10 +672,9 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
 
     nav = []
 
-    now = time.time()
+    history = page_history.get(user_id, set())
 
-    history = page_history.get(user_id, {})
-
+    # 🔥 Prev button (disable logic nanti di callback)
     nav.append(
         InlineKeyboardButton(text="⬅ Prev", callback_data="prev")
     )
@@ -668,11 +684,11 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
         for i in range(total_pages):
 
             if i == page:
-                emoji = "✅"  # current page
+                emoji = "✅"
             elif i in history:
-                emoji = "☑️"  # already opened
+                emoji = "☑️"
             else:
-                emoji = "❎"  # not opened yet
+                emoji = "❎"
 
             nav.append(
                 InlineKeyboardButton(
@@ -700,7 +716,6 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
             ]
         ]
     )
-
 @router.callback_query(F.data == "next")
 async def next_page(call: CallbackQuery):
 
@@ -708,18 +723,21 @@ async def next_page(call: CallbackQuery):
     state = user_states.get(user_id)
 
     if not state:
-        return await call.answer("Session expired")
+        await call.answer("Session expired")
+        return
 
     max_page = (len(state["data"]) - 1) // 5
 
-    if state["page"] < max_page:
-        page_history.setdefault(user_id, set()).add(state["page"])
-        state["page"] += 1
+    # 🔥 stop kalau sudah terakhir
+    if state["page"] >= max_page:
+        await call.answer("Last page")
+        return
+
+    page_history.setdefault(user_id, set()).add(state["page"])
+    state["page"] += 1
 
     await call.answer()
     await render_page(call, user_id)
-
-
 @router.callback_query(F.data == "prev")
 async def prev_page(call: CallbackQuery):
 
@@ -727,11 +745,16 @@ async def prev_page(call: CallbackQuery):
     state = user_states.get(user_id)
 
     if not state:
-        return await call.answer("Session expired")
+        await call.answer("Session expired")
+        return
 
-    if state["page"] > 0:
-        page_history.setdefault(user_id, set()).add(state["page"])
-        state["page"] -= 1
+    # 🔥 STOP kalau sudah di 0
+    if state["page"] <= 0:
+        await call.answer("First page")
+        return
+
+    page_history.setdefault(user_id, set()).add(state["page"])
+    state["page"] -= 1
 
     await call.answer()
     await render_page(call, user_id)
@@ -743,9 +766,21 @@ async def goto_page(call: CallbackQuery):
     state = user_states.get(user_id)
 
     if not state:
-        return await call.answer("Session expired")
+        await call.answer("Session expired")
+        return
 
-    page = int(call.data.split(":")[1])
+    try:
+        page = int(call.data.split(":")[1])
+    except:
+        await call.answer("Invalid page")
+        return
+
+    max_page = (len(state["data"]) - 1) // 5
+
+    # 🔥 clamp safety
+    if page < 0 or page > max_page:
+        await call.answer("Page out of range")
+        return
 
     page_history.setdefault(user_id, set()).add(state["page"])
     state["page"] = page
@@ -783,25 +818,11 @@ async def render_page(call: CallbackQuery, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # 🔥 UPDATE TEXT + BUTTON (NO DELETE)
+    # 🔥 ONLY UPDATE TEXT + BUTTON
     await call.message.edit_text(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
-
-    # 🔥 SEND MEDIA (STABIL)
-    media_group = []
-
-    for m in chunk:
-        if m["file_type"] == "photo":
-            media_group.append(InputMediaPhoto(media=m["file_id"]))
-        elif m["file_type"] == "video":
-            media_group.append(InputMediaVideo(media=m["file_id"]))
-        else:
-            media_group.append(InputMediaDocument(media=m["file_id"]))
-
-    if media_group:
-        await call.message.answer_media_group(media_group)
 
     await call.answer()
 # ======================
