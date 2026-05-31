@@ -775,7 +775,7 @@ async def render_page(call: CallbackQuery, user_id: int):
 
     state = user_states.get(user_id)
     if not state:
-        return await call.message.answer("❌ Session expired, kirim CODE lagi")
+        return await call.answer("Session expired")
 
     data = state["data"]
     page_size = 5
@@ -797,35 +797,28 @@ async def render_page(call: CallbackQuery, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # 🔥 DELETE OLD MEDIA (ANTI SPAM CHAT)
-    try:
-        await call.message.delete()
-    except:
-        pass
-
-    # SEND MEDIA
-    try:
-        media_group = []
-
-        for media in chunk:
-            if media["file_type"] == "photo":
-                media_group.append(InputMediaPhoto(media=media["file_id"]))
-            elif media["file_type"] == "video":
-                media_group.append(InputMediaVideo(media=media["file_id"]))
-            else:
-                media_group.append(InputMediaDocument(media=media["file_id"]))
-
-        if media_group:
-            await call.message.answer_media_group(media_group)
-
-    except:
-        pass
-
-    await call.message.answer(
+    # 🔥 UPDATE TEXT + BUTTON (NO DELETE)
+    await call.message.edit_text(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
-# =========================
+
+    # 🔥 SEND MEDIA (STABIL)
+    media_group = []
+
+    for m in chunk:
+        if m["file_type"] == "photo":
+            media_group.append(InputMediaPhoto(media=m["file_id"]))
+        elif m["file_type"] == "video":
+            media_group.append(InputMediaVideo(media=m["file_id"]))
+        else:
+            media_group.append(InputMediaDocument(media=m["file_id"]))
+
+    if media_group:
+        await call.message.answer_media_group(media_group)
+
+    await call.answer()
+# ======================
 # ADD USER FUNCTION
 # =========================
 
