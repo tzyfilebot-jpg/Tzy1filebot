@@ -623,7 +623,6 @@ async def receive_code(message: Message):
     }
 
     await render_first_page(message, user_id)
-from aiogram.types import InputMediaPhoto
 
 async def render_first_page(message: Message, user_id: int):
 
