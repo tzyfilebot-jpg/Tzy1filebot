@@ -99,6 +99,9 @@ async def init_db():
 # CACHE
 # =========================
 
+
+page_history = {}  # user_id -> {page: last_open_time}
+page_cooldown = {}  # user_id -> last_switch_time
 upload_sessions = {}
 user_states = {}
 last_edit_time = {}
@@ -562,30 +565,32 @@ async def load_media(code: str):
 # RECEIVE CODE
 # =========================
 
-@router.message(
-    F.text &
-    ~F.text.startswith("/")
-)
+@router.message(F.text)
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
+    text = message.text.strip()
+
+    if text.startswith("/"):
+        return
 
     state = user_states.get(user_id)
 
-    if not state or state.get("mode") != "getfile":
+    if not state:
         return
 
-    code = message.text.strip()
+    if state.get("mode") != "getfile":
+        return
 
-    data = await load_media(code)
+    data = await load_media(text)
 
     if not data:
-        await message.answer("❌ CODE tidak ditemukan atau sudah expired")
+        await message.answer("❌ CODE tidak ditemukan")
         return
 
     user_states[user_id] = {
         "mode": "view",
-        "code": code,
+        "code": text,
         "page": 0,
         "data": data
     }
@@ -595,70 +600,60 @@ async def receive_code(message: Message):
 # BUILD KEYBOARD
 # =========================
 
-def build_kb(
-    page,
-    total_pages,
-    show_numbers=True
-):
+def build_kb(user_id, page, total_pages, show_numbers=True):
 
     nav = []
 
+    now = time.time()
+
+    history = page_history.get(user_id, {})
+
     nav.append(
-        InlineKeyboardButton(
-            text="⬅ Prev",
-            callback_data="prev"
-        )
+        InlineKeyboardButton(text="⬅ Prev", callback_data="prev")
     )
 
     if show_numbers:
 
         for i in range(total_pages):
 
+            if i == page:
+                emoji = "💙"  # current page
+            elif i in history:
+                emoji = "🤍"  # already opened
+            else:
+                emoji = "❤️"  # not opened yet
+
             nav.append(
                 InlineKeyboardButton(
-                    text=str(i + 1),
+                    text=f"{i+1}{emoji}",
                     callback_data=f"page:{i}"
                 )
             )
 
     nav.append(
-        InlineKeyboardButton(
-            text="Next ➡",
-            callback_data="next"
-        )
+        InlineKeyboardButton(text="Next ➡", callback_data="next")
     )
 
     return InlineKeyboardMarkup(
-
         inline_keyboard=[
-
             nav,
-
             [
-
                 InlineKeyboardButton(
                     text="📢 JOIN CHANNEL",
                     url="https://t.me/+slzhVF3Lev0zZTRh"
                 ),
-
                 InlineKeyboardButton(
                     text="💬 GROUP CHAT",
                     url="https://t.me/gcbotkx"
                 )
-
             ]
-
         ]
-
     )
 # =========================
 # SEND PAGE
 # =========================
 
-async def send_page(
-    message: Message,
-    user_id: int
-):
+async def send_page(message: Message, user_id: int):
 
     state = user_states[user_id]
     data = state["data"]
@@ -666,6 +661,33 @@ async def send_page(
     page_size = 5
     page = state["page"]
 
+    # =========================
+    # LIMIT 24 JAM PER PAGE
+    # =========================
+    now = time.time()
+    key = (user_id, page)
+
+    last_click = page_cooldown.get(key, 0)
+
+    # kalau sudah pernah dibuka
+    if last_click and now - last_click < 86400:
+        await message.answer("⛔ Page ini masih cooldown 24 jam. Sabar, jangan serakah.")
+        return
+
+    # limit 5 detik antar click
+    last_any = page_cooldown.get(user_id, 0)
+    if now - last_any < 5:
+        await message.answer("⏳ Slow down. 5 detik dulu baru boleh klik lagi.")
+        return
+
+    page_cooldown[user_id] = now
+
+    # mark page opened
+    page_history.setdefault(user_id, {})[page] = now
+
+    # =========================
+    # PAGINATION
+    # =========================
     start = page * page_size
     end = start + page_size
     chunk = data[start:end]
@@ -673,93 +695,47 @@ async def send_page(
     total_pages = (len(data) + page_size - 1) // page_size
     total_media = len(data)
 
-    show_numbers = total_pages > 1
-
-    # =========================
-    # SAFE CALC RANGE
-    # =========================
     current_start = start + 1
     current_end = start + len(chunk)
 
-    # =========================
-    # SAFE SIZE CALC
-    # =========================
-    try:
-        size_mb = round(
-            sum(x["file_size"] for x in data) / (1024 * 1024),
-            2
-        )
-    except:
-        size_mb = 0
+    size_mb = round(
+        sum(x["file_size"] for x in data) / (1024 * 1024),
+        2
+    )
 
     text = (
         f"📦 CODE: {state['code']}\n"
-        f"📄 Halaman saat ini: {page+1}/{total_pages}\n"
+        f"📄 Page: {page+1}/{total_pages}\n"
         f"📁 Media: {current_start}-{current_end} / {total_media}\n"
-        f"💾 Total Size: {size_mb} MB\n"
+        f"💾 Size: {size_mb} MB\n"
         f"🔒 Powered By TZY FILE BOT"
     )
 
     # =========================
-    # SINGLE MEDIA
-    # =========================
-    if len(chunk) == 1:
-
-        media = chunk[0]
-
-        await send_single(
-            message,
-            media,
-            text,
-            page,
-            total_pages,
-            show_numbers
-        )
-        return
-
-    # =========================
-    # MEDIA GROUP
+    # SEND MEDIA
     # =========================
     media_group = []
 
     for media in chunk:
 
         if media["file_type"] == "photo":
-            media_group.append(
-                InputMediaPhoto(media=media["file_id"])
-            )
+            media_group.append(InputMediaPhoto(media=media["file_id"]))
 
         elif media["file_type"] == "video":
-            media_group.append(
-                InputMediaVideo(media=media["file_id"])
-            )
+            media_group.append(InputMediaVideo(media=media["file_id"]))
 
         else:
-            media_group.append(
-                InputMediaDocument(media=media["file_id"])
-            )
+            media_group.append(InputMediaDocument(media=media["file_id"]))
 
     try:
         await message.answer_media_group(media_group)
     except:
-        # kalau Telegram limit / flood / error, fallback
         for m in chunk:
-            await send_single(
-                message,
-                m,
-                text,
-                page,
-                total_pages,
-                show_numbers
-            )
+            await send_single(message, m, text, page, total_pages, True)
 
     await message.answer(
         text,
-        reply_markup=build_kb(
-            page,
-            total_pages,
-            show_numbers
-        )
+        reply_markup=build_kb(user_id, page, total_pages)
     )
 # =========================
 # PAGINATION
