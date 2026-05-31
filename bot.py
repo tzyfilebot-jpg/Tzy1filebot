@@ -594,27 +594,35 @@ async def load_media(code: str):
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
-    text = message.text.strip()
+    text = message.text or ""
 
     state = user_states.get(user_id)
 
     if not state or state.get("mode") != "getfile":
         return
 
-    data = await load_media(text)
+    # 🔥 ambil CODE dari pesan
+    match = re.search(r"CODE:\s*(\S+)", text)
+
+    if not match:
+        return await message.answer("❌ CODE tidak ditemukan dalam pesan")
+
+    code = match.group(1).strip()
+
+    # 🔥 ambil data dari code
+    data = await load_media(code)
 
     if not data:
         return await message.answer("❌ CODE tidak ditemukan atau salah")
 
     user_states[user_id] = {
         "mode": "view",
-        "code": text,
+        "code": code,
         "page": 0,
         "data": data
     }
 
     await render_first_page(message, user_id)
-
 async def render_first_page(message: Message, user_id: int):
 
     state = user_states[user_id]
@@ -623,16 +631,16 @@ async def render_first_page(message: Message, user_id: int):
     page = 0
     page_size = 5
 
-    start = 0
-    chunk = data[:page_size]
+    start = page * page_size
+    chunk = data[start:start + page_size]
 
     total_pages = (len(data) + page_size - 1) // page_size
     total_media = len(data)
 
     text = (
         f"📦 CODE: {state['code']}\n"
-        f"📄 Page: 1/{total_pages}\n"
-        f"📁 Media: 1-{len(chunk)} / {total_media}\n"
+        f"📄 Page: {page + 1}/{total_pages}\n"
+        f"📁 Media: {start + 1}-{start + len(chunk)} / {total_media}\n"
         f"🔒 Powered By TZY FILE BOT"
     )
 
