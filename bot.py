@@ -636,7 +636,7 @@ async def send_media(bot, chat_id: int, chunk: list):
 # GETFILE HANDLER
 # =========================
 
-@router.message()
+@router.message(F.text & ~F.text.startswith("/") & ~F.photo & ~F.video & ~F.document)
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
