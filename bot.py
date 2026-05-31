@@ -102,6 +102,7 @@ async def init_db():
 
 page_history = {}  # user_id -> {page: last_open_time}
 page_cooldown = {}  # user_id -> last_switch_time
+user_click_lock = {}
 upload_sessions = {}
 user_states = {}
 last_edit_time = {}
@@ -661,29 +662,39 @@ async def send_page(message: Message, user_id: int):
     page_size = 5
     page = state["page"]
 
-    # =========================
-    # LIMIT 24 JAM PER PAGE
-    # =========================
     now = time.time()
+
+    # =========================
+    # GLOBAL CLICK COOLDOWN (5 detik)
+    # =========================
+    last_global = user_click_lock.get(user_id, 0)
+
+    if now - last_global < 5:
+        warn = await message.answer("⏳ Santai dulu 5 detik.")
+        import asyncio
+        asyncio.create_task(auto_delete(warn, 3))
+        return
+
+    user_click_lock[user_id] = now
+
+    # =========================
+    # PAGE 24 JAM COOLDOWN
+    # =========================
     key = (user_id, page)
+    last_page_open = page_cooldown.get(key, 0)
 
-    last_click = page_cooldown.get(key, 0)
-
-    # kalau sudah pernah dibuka
-    if last_click and now - last_click < 86400:
-        await message.answer("⛔ Page ini masih cooldown 24 jam. Sabar, jangan serakah.")
+    if last_page_open and now - last_page_open < 86400:
+        warn = await message.answer("⛔ Page ini sudah kamu buka. Tunggu 24 jam.")
+        import asyncio
+        asyncio.create_task(auto_delete(warn, 5))
         return
 
-    # limit 5 detik antar click
-    last_any = page_cooldown.get(user_id, 0)
-    if now - last_any < 5:
-        await message.answer("⏳ Slow down. 5 detik dulu baru boleh klik lagi.")
-        return
+    page_cooldown[key] = now
 
-    page_cooldown[user_id] = now
-
-    # mark page opened
-    page_history.setdefault(user_id, {})[page] = now
+    # =========================
+    # MARK HISTORY (UNTUK ❤️🤍💙)
+    # =========================
+    page_history.setdefault(user_id, set()).add(page)
 
     # =========================
     # PAGINATION
