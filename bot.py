@@ -752,7 +752,7 @@ def build_kb(user_id, page, total_pages):
     buttons = []
 
     # =========================
-    # NAVIGATION (chunk page)
+    # NAVIGATION
     # =========================
     buttons.append([
         InlineKeyboardButton(text="⬅ Prev", callback_data="prev"),
@@ -760,12 +760,18 @@ def build_kb(user_id, page, total_pages):
     ])
 
     # =========================
-    # PAGE INDICATOR (chunk system)
+    # PAGE WINDOW (5 tombol dinamis)
     # =========================
     page_row = []
 
+    window = 5
+
     start = max(0, page - 2)
-    end = min(total_pages, page + 3)
+    end = start + window
+
+    if end > total_pages:
+        end = total_pages
+        start = max(0, end - window)
 
     for i in range(start, end):
 
@@ -783,10 +789,11 @@ def build_kb(user_id, page, total_pages):
             )
         )
 
-    buttons.append(page_row)
+    if page_row:
+        buttons.append(page_row)
 
     # =========================
-    # FOOTER BUTTONS
+    # FOOTER
     # =========================
     buttons.append([
         InlineKeyboardButton(
@@ -825,12 +832,12 @@ async def render_first_page(message, user_id: int):
     total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
     # =========================
-    # MEDIA FIRST (IMPORTANT)
+    # 1. SEND MEDIA GROUP (BUBBLE ATAS)
     # =========================
     await send_media(message.bot, message.chat.id, chunk)
 
     # =========================
-    # CONTROL MESSAGE (BUTTON DI BAWAH MEDIA)
+    # 2. CONTROL MESSAGE (DI BAWAH MEDIA)
     # =========================
     text = (
         f"📦 CODE: {state['code']}\n"
@@ -856,7 +863,6 @@ async def render_page(call, user_id: int):
         return await call.answer("Session expired")
 
     data = state["data"]
-
     page = state["page"]
     page_size = 5
 
@@ -865,27 +871,23 @@ async def render_page(call, user_id: int):
 
     total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
-    caption = (
+    # =========================
+    # SEND MEDIA SETIAP PAGE
+    # =========================
+    await send_media(call.bot, call.message.chat.id, chunk)
+
+    # =========================
+    # CONTROL MESSAGE (DI BAWAH MEDIA)
+    # =========================
+    text = (
         f"📦 CODE: {state['code']}\n"
         f"📄 Page: {page+1}/{total_pages}\n"
-        f"📁 Items: {start+1}-{start+len(chunk)} / {len(data)}"
+        f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
     )
 
     kb = build_kb(user_id, page, total_pages)
 
-    # =========================
-    # EDIT ONLY TEXT + KB
-    # =========================
-    try:
-        await call.message.edit_text(caption, reply_markup=kb)
-    except:
-        pass
-
-    # =========================
-    # SEND MEDIA PAGE (5 ITEMS)
-    # =========================
-    await send_media(call.bot, call.message.chat.id, chunk)
-
+    await call.message.answer(text, reply_markup=kb)
     await call.answer()
 # =========================
 # CALLBACK NEXT
@@ -899,25 +901,13 @@ async def next_page(call):
     if not state:
         return await call.answer("Session expired")
 
-    data = state["data"]
     page_size = 5
+    max_page = (len(state["data"]) - 1) // page_size
 
-    # =========================
-    # TOTAL PAGE FIXED
-    # =========================
-    total_pages = max(1, (len(data) + page_size - 1) // page_size)
-
-    # =========================
-    # CHECK LAST PAGE
-    # =========================
-    if state["page"] >= total_pages - 1:
+    if state["page"] >= max_page:
         return await call.answer("Last page")
 
     state["page"] += 1
-
-    # safety clamp
-    state["page"] = min(state["page"], total_pages - 1)
-
     await render_page(call, user_id)
     
 # =========================
@@ -933,21 +923,10 @@ async def prev_page(call):
     if not state:
         return await call.answer("Session expired")
 
-    if "page" not in state:
-        state["page"] = 0
-
-    # =========================
-    # FIRST PAGE CHECK
-    # =========================
     if state["page"] <= 0:
-        state["page"] = 0
         return await call.answer("First page")
 
     state["page"] -= 1
-
-    # safety clamp (optional tapi aman)
-    state["page"] = max(0, state["page"])
-
     await render_page(call, user_id)
 # =========================
 # CALLBACK JUMP PAGE
@@ -969,8 +948,7 @@ async def goto_page(call):
     # SAFE PARSE PAGE
     # =========================
     try:
-        _, page_str = call.data.split(":")
-        page = int(page_str)
+        page = int(call.data.split(":")[1])
     except (ValueError, IndexError):
         return await call.answer("Invalid page")
 
@@ -978,14 +956,11 @@ async def goto_page(call):
     max_page = (len(data) - 1) // page_size
 
     # =========================
-    # VALIDATION
+    # CLAMP PAGE (anti error)
     # =========================
     if page < 0 or page > max_page:
         return await call.answer("Invalid page")
 
-    # =========================
-    # SET PAGE
-    # =========================
     state["page"] = page
 
     await render_page(call, user_id)
