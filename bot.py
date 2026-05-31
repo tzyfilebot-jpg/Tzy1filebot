@@ -627,55 +627,74 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
 # SEND PAGE
 # =========================
 
+import time
+import random
+import asyncio
+
+COOLDOWN_MSGS = [
+    "⏳ Slow down bro...\n5 detik aja gak sabar?",
+    "⏳ Global lock aktif\nJangan spam, bot bukan dewa 😌",
+    "⏳ Santai dulu, server gak lari 😏"
+]
+
+def check_cooldown(cache: dict, key, limit: int):
+    now = time.time()
+    last = cache.get(key, 0)
+
+    if now - last < limit:
+        return False, limit - (now - last)
+
+    cache[key] = now
+    return True, 0
+# =========================
+# SEND PAGE FIXED
+# =========================
 async def send_page(message: Message, user_id: int):
 
-    state = user_states[user_id]
-    data = state["data"]
+    state = user_states.get(user_id)
+    if not state:
+        return
 
+    data = state["data"]
     page_size = 5
     page = state["page"]
 
-    now = time.time()
+    # =========================
+    # GLOBAL COOLDOWN
+    # =========================
+    ok, remain = check_cooldown(
+        cooldown.setdefault("global", {}),
+        user_id,
+        5
+    )
 
-    # =========================
-    # 🔥 GLOBAL COOLDOWN (soft lock)
-    # =========================
-    last_global = cooldown["global"].get(user_id, 0)
-    global_block = now - last_global < 5
-
-    # =========================
-    # 🔥 PAGE COOLDOWN (soft lock)
-    # =========================
-    key = (user_id, page)
-    last_page = cooldown["page"].get(key, 0)
-    page_block = last_page and (now - last_page < 86400)
-
-    # =========================
-    # 💀 SOFT LOCK FEEDBACK (TIDAK RETURN DEAD)
-    # =========================
-    if global_block:
-        warn = await message.answer("⏳ Santai dulu 5 detik (global lock)")
-        import asyncio
+    if not ok:
+        warn = await message.answer(
+            f"{random.choice(COOLDOWN_MSGS)}\n⏳ sisa {int(remain)} detik"
+        )
         asyncio.create_task(auto_delete(warn, 3))
         return
 
-    if page_block:
-        remain = int(86400 - (now - last_page))
+    # =========================
+    # PAGE COOLDOWN
+    # =========================
+    key = (user_id, page)
+
+    ok_page, _ = check_cooldown(
+        cooldown.setdefault("page", {}),
+        key,
+        86400
+    )
+
+    if not ok_page:
         warn = await message.answer(
-            f"⛔ Page ini masih lock\n⏳ Sisa: {remain//3600} jam"
+            "⛔ Page ini masih lock\n💀 jangan serakah"
         )
-        import asyncio
         asyncio.create_task(auto_delete(warn, 5))
         return
 
     # =========================
-    # UPDATE COOLDOWN STATE
-    # =========================
-    cooldown["global"][user_id] = now
-    cooldown["page"][key] = now
-
-    # =========================
-    # HISTORY (❤️🤍💙 SYSTEM)
+    # HISTORY
     # =========================
     page_history.setdefault(user_id, set()).add(page)
 
@@ -683,14 +702,10 @@ async def send_page(message: Message, user_id: int):
     # PAGINATION
     # =========================
     start = page * page_size
-    end = start + page_size
-    chunk = data[start:end]
+    chunk = data[start:start + page_size]
 
     total_pages = (len(data) + page_size - 1) // page_size
     total_media = len(data)
-
-    current_start = start + 1
-    current_end = start + len(chunk)
 
     size_mb = round(
         sum(x["file_size"] for x in data) / (1024 * 1024),
@@ -700,14 +715,11 @@ async def send_page(message: Message, user_id: int):
     text = (
         f"📦 CODE: {state['code']}\n"
         f"📄 Page: {page+1}/{total_pages}\n"
-        f"📁 Media: {current_start}-{current_end} / {total_media}\n"
+        f"📁 Media: {start+1}-{start+len(chunk)} / {total_media}\n"
         f"💾 Size: {size_mb} MB\n"
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # =========================
-    # SEND MEDIA
-    # =========================
     media_group = []
 
     for media in chunk:
@@ -732,44 +744,42 @@ async def send_page(message: Message, user_id: int):
 # PAGINATION
 # =========================
 
-@router.callback_query(
-    F.data.in_(["next", "prev"])
-)
-async def paginate(
-    call: CallbackQuery
-):
+@router.callback_query(F.data.in_(["next", "prev"]))
+async def paginate(call: CallbackQuery):
 
     user_id = call.from_user.id
-
     state = user_states.get(user_id)
 
-    if not state:
+    if not state or state.get("mode") != "view":
         return
 
-    if state.get("mode") != "view":
+    # =========================
+    # COOLDOWN TAMBAHAN (BIAR TOMBOL GAK SPAM)
+    # =========================
+    ok, remain = check_cooldown(
+        cooldown.setdefault("global", {}),
+        user_id,
+        2
+    )
+
+    if not ok:
+        await call.answer(
+            random.choice(COOLDOWN_MSGS),
+            show_alert=True
+        )
         return
 
-    total_pages = (
-        len(state["data"]) + 4
-    ) // 5
+    total_pages = (len(state["data"]) + 4) // 5
 
     if call.data == "next":
-
         if state["page"] < total_pages - 1:
             state["page"] += 1
-
     else:
-
         if state["page"] > 0:
             state["page"] -= 1
 
     await call.message.delete()
-
-    await send_page(
-        call.message,
-        user_id
-    )
-
+    await send_page(call.message, user_id)
 # =========================
 # PAGE SELECT
 # =========================
