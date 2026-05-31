@@ -121,34 +121,17 @@ router = Router()
 # KEYBOARD
 # =========================
 
-def get_keyboard(is_admin=False):
-
-    rows = [
-
-        [
-            KeyboardButton(text="📤 Up File"),
-            KeyboardButton(text="📥 Get File")
-        ],
-
-        [
-            KeyboardButton(text="👤 Account"),
-            KeyboardButton(text="💎 VIP")
-        ],
-
-        [
-            KeyboardButton(text="❓ Help")
-        ]
-
-    ]
+def get_keyboard():
 
     return ReplyKeyboardMarkup(
-
-        keyboard=rows,
-
+        keyboard=[
+            [
+                KeyboardButton(text="📤 Up File"),
+                KeyboardButton(text="📥 Get File")
+            ]
+        ],
         resize_keyboard=True,
-
-        input_field_placeholder="Pilih menu..."
-
+        input_field_placeholder="Upload atau ambil file... jangan bingung 😏"
     )
 # =========================
 # FORCE SUB
@@ -205,10 +188,7 @@ def force_kb(channel):
 # =========================
 
 @router.message(F.text == "/start")
-async def start(
-    message: Message,
-    bot: Bot
-):
+async def start(message: Message, bot: Bot):
 
     user = message.from_user
 
@@ -218,61 +198,53 @@ async def start(
         user.full_name
     )
 
-    # kalau force sub dimatikan
-    if not FORCE_CHANNEL:
+    # =========================
+    # FORCE SUB CHECK
+    # =========================
+    if FORCE_CHANNEL:
 
-        return await message.answer(
-            "🔥 Menu aktif",
-            reply_markup=get_keyboard(
-                is_admin(user.id)
-            )
+        ok = await check_force_sub(
+            bot,
+            user.id,
+            FORCE_CHANNEL
         )
 
-    # cek join channel
-    ok = await check_force_sub(
-        bot,
-        user.id,
-        FORCE_CHANNEL
-    )
-
-    if not ok:
-
-        return await message.answer(
-            "⚠️ Join channel dulu sebelum pakai bot",
-            reply_markup=force_kb(
-                FORCE_CHANNEL
+        if not ok:
+            return await message.answer(
+                "⚠️ ACCESS BLOCKED\n\n"
+                "😏 Kamu belum join channel.\n"
+                "Join dulu, baru bisa pakai bot.",
+                reply_markup=force_kb(FORCE_CHANNEL)
             )
-        )
 
+    # =========================
+    # SUCCESS START
+    # =========================
     await message.answer(
-        "🔥 Menu aktif",
-        reply_markup=get_keyboard(
-            is_admin(
-                user.id
-            )
-        )
+        "🔥 BOT ONLINE\n\n"
+        "😏 Selamat datang di FILE CODE SYSTEM.\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "📌 MENU\n"
+        "━━━━━━━━━━━━━━\n"
+        "📤 Up File → upload file\n"
+        "📥 Get File → ambil file pakai CODE\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "💀 NOTE\n"
+        "━━━━━━━━━━━━━━\n"
+        "• Bot tidak peduli kamu salah input\n"
+        "• CODE hilang = tanggung jawab user\n"
+        "• Jangan spam, nanti dibatasi 😌",
+        reply_markup=get_keyboard()
     )
-
-
 # =========================
 # CHECK SUB
 # =========================
 
-@router.callback_query(
-    F.data == "check_sub"
-)
-async def check_sub(
-    call: CallbackQuery,
-    bot: Bot
-):
+@router.callback_query(F.data == "check_sub")
+async def check_sub(call: CallbackQuery, bot: Bot):
 
-    # force sub OFF
     if not FORCE_CHANNEL:
-
-        return await call.answer(
-            "Force sub OFF",
-            show_alert=True
-        )
+        return await call.answer("Force sub OFF", show_alert=True)
 
     ok = await check_force_sub(
         bot,
@@ -281,24 +253,23 @@ async def check_sub(
     )
 
     if not ok:
-
         return await call.answer(
             "❌ Kamu belum join channel",
             show_alert=True
         )
 
-    await call.message.edit_text(
-        "✅ Verified"
-    )
+    # =========================
+    # SUCCESS
+    # =========================
+    await call.message.edit_text("✅ VERIFIED")
 
     await call.message.answer(
-        "🔥 Menu aktif",
-        reply_markup=get_keyboard(
-            is_admin(
-                call.from_user.id
-            )
-        )
+        "🔥 ACCESS GRANTED\n\n"
+        "😏 Silakan lanjut pakai bot.",
+        reply_markup=get_keyboard()
     )
+
+    await call.answer()
 # =========================
 # UP FILE INIT
 # =========================
@@ -866,28 +837,55 @@ async def add_user(
 # ACCOUNT
 # =========================
 
-@router.message(
-    F.text == "👤 Account"
-)
-async def account_cmd(
-    message: Message
-):
+@router.message(F.text == "/account")
+async def account_cmd(message: Message):
 
     user = message.from_user
 
+    # simpan user kalau belum ada
     await add_user(
         user.id,
         user.username or "none",
         user.full_name
     )
 
-    await message.answer(
+    async with db_pool.acquire() as conn:
 
+        # ambil semua code milik user
+        codes = await conn.fetch(
+            """
+            SELECT code, total_media, total_size
+            FROM codes
+            WHERE owner_id = $1
+            ORDER BY id DESC
+            LIMIT 10
+            """,
+            user.id
+        )
+
+        total_codes = await conn.fetchval(
+            "SELECT COUNT(*) FROM codes WHERE owner_id = $1",
+            user.id
+        )
+
+    # =========================
+    # FORMAT LIST CODE
+    # =========================
+    if codes:
+        code_text = "\n".join(
+            f"📦 {c['code']} | {c['total_media']} file"
+            for c in codes
+        )
+    else:
+        code_text = "❌ Belum punya code"
+
+    await message.answer(
         f"👤 ACCOUNT INFO\n\n"
         f"🆔 ID: {user.id}\n"
         f"👤 Name: {user.full_name}\n"
-        f"🔗 Username: @{user.username or 'none'}"
-
+        f"🔗 Username: @{user.username or 'none'}\n\n"
+        f"📊 TOTAL CODE: {total_codes}\n\n"
+        f"📁 LAST CODE:\n{code_text}"
     )
 # =========================
 # VIP
@@ -905,7 +903,7 @@ def vip_kb():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🚀 Join VIP",
+                    text="🚀 JOIN VIP CHANNEL",
                     url=f"https://t.me/{link}"
                 )
             ],
@@ -919,29 +917,43 @@ def vip_kb():
     )
 
 
-@router.message(F.text == "💎 VIP")
-async def vip_menu(message: Message):
+@router.message(F.text == "/vip")
+async def vip_cmd(message: Message):
 
     await message.answer(
-        "💎 VIP MENU\n\n"
-        "🔥 Unlimited Upload\n"
-        "🔥 Priority Get File\n"
-        "🔥 Fast Response",
+        "💎 VIP ACCESS ACTIVATED (DEMO MODE)\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "🔥 BENEFIT VIP\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "⚡ Unlimited Upload File\n"
+        "⚡ Priority Processing (No Queue)\n"
+        "⚡ Fast Get File Access\n"
+        "⚡ Anti Limit System\n"
+        "⚡ Full Media Support (Photo / Video / Document)\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "📦 STORAGE INFO\n"
+        "━━━━━━━━━━━━━━\n"
+        "📁 Media disimpan full di channel database\n"
+        "🔒 Aman (hanya bisa diakses via CODE)\n"
+        "⚠ Tapi jangan harap gratisan diperlakukan spesial 😏\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "💀 SAVAGE NOTICE\n"
+        "━━━━━━━━━━━━━━\n"
+        "• VIP bukan buat orang yang cuma nanya doang\n"
+        "• Bot gak peduli kamu buru-buru\n"
+        "• Semua tetap pakai sistem CODE\n"
+        "• Salah pakai? ya itu masalah kamu sendiri 😌\n",
         reply_markup=vip_kb()
     )
 
-
-@router.callback_query(
-    F.data == "vip_cancel"
-)
-async def vip_cancel(
-    call: CallbackQuery
-):
+@router.callback_query(F.data == "vip_cancel")
+async def vip_cancel(call: CallbackQuery):
 
     await call.message.edit_text(
-        "❌ VIP dibatalkan"
+        "❌ VIP ACCESS CLOSED\n\n"
+        "😏 Ya udah, balik ke mode gratisan lagi.\n"
+        "Kalau masih mau VIP, jangan cuma klik—tapi bayar juga."
     )
-
 # =========================
 # ADMIN CHECK
 # =========================
@@ -956,153 +968,189 @@ def is_admin(
 # ADD ADMIN
 # =========================
 
-@router.message(
-    F.text.startswith("/addadmin")
-)
-async def add_admin(
-    message: Message
-):
+@router.message(F.text.startswith("/addadmin"))
+async def add_admin(message: Message):
 
-    if not is_admin(
-        message.from_user.id
-    ):
-
+    # =========================
+    # SECURITY CHECK
+    # =========================
+    if not is_admin(message.from_user.id):
         return await message.answer(
-            "❌ Not allowed"
+            "🚫 ACCESS DENIED\n\n"
+            "😏 Kamu bukan admin.\n"
+            "Jangan coba-coba jadi Tuhan di bot ini."
         )
 
+    # =========================
+    # PARSE ARGUMENT
+    # =========================
+    parts = message.text.split()
+
+    if len(parts) != 2:
+        return await message.answer(
+            "❌ FORMAT SALAH\n\n"
+            "Gunakan:\n"
+            "/addadmin <id>"
+        )
+
+    # =========================
+    # VALIDATE USER ID
+    # =========================
     try:
-
-        uid = int(
-            message.text.split()[1]
+        uid = int(parts[1])
+    except ValueError:
+        return await message.answer(
+            "❌ INVALID ID\n\n"
+            "😏 Itu bukan angka, jangan ngadi-ngadi."
         )
 
-        ADMINS.add(uid)
+    # =========================
+    # ADD ADMIN
+    # =========================
+    ADMINS.add(uid)
 
-        await message.answer(
-            f"✅ Admin ditambah: {uid}"
-        )
-
-    except:
-
-        await message.answer(
-            "❌ Format:\n/addadmin <id>"
-        )
-
+    await message.answer(
+        "💀 ADMIN ADDED\n\n"
+        f"👤 User ID: {uid}\n\n"
+        "😏 Sekarang dia punya akses.\n"
+        "Semoga gak disalahgunakan ya..."
+    )
 # =========================
 # STATISTIC
 # =========================
 
-@router.message(
-    F.text == "/stat"
-)
-async def stat_cmd(
-    message: Message
-):
+@router.message(F.text == "/stat")
+async def stat_cmd(message: Message):
 
-    if not is_admin(
-        message.from_user.id
-    ):
-
+    # =========================
+    # ADMIN CHECK
+    # =========================
+    if not is_admin(message.from_user.id):
         return await message.answer(
-            "❌ Not allowed"
+            "🚫 ACCESS DENIED\n\n"
+            "😏 Kamu bukan admin.\n"
+            "Stat ini bukan buat rakyat biasa."
         )
 
-    async with db_pool.acquire() as conn:
+    # =========================
+    # FETCH STAT SAFE
+    # =========================
+    try:
+        async with db_pool.acquire() as conn:
 
-        users = await conn.fetchval(
-            "SELECT COUNT(*) FROM users"
+            users = await conn.fetchval(
+                "SELECT COUNT(*) FROM users"
+            )
+
+            codes = await conn.fetchval(
+                "SELECT COUNT(*) FROM codes"
+            )
+
+            media = await conn.fetchval(
+                "SELECT COUNT(*) FROM medias"
+            )
+
+    except Exception:
+        return await message.answer(
+            "⚠️ DATABASE ERROR\n\n"
+            "😏 Server lagi ngambek, coba lagi nanti."
         )
 
-        codes = await conn.fetchval(
-            "SELECT COUNT(*) FROM codes"
-        )
-
-        media = await conn.fetchval(
-            "SELECT COUNT(*) FROM medias"
-        )
-
+    # =========================
+    # RESPONSE
+    # =========================
     await message.answer(
-
-        "📊 STATISTIC\n\n"
-        f"👤 Users: {users}\n"
-        f"🔑 Codes: {codes}\n"
-        f"📦 Media: {media}"
-
+        "📊 SYSTEM STATISTICS\n\n"
+        "━━━━━━━━━━━━━━\n"
+        f"👤 Users  : {users}\n"
+        f"🔑 Codes  : {codes}\n"
+        f"📦 Media  : {media}\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "💀 Bot still alive...\n"
+        "😏 But everything is being watched."
     )
-
 # =========================
 # BROADCAST
 # =========================
 
-import asyncio
+@router.message(F.text.startswith("/broadcast"))
+async def broadcast_cmd(message: Message):
 
-@router.message(
-    F.text.startswith("/broadcast")
-)
-async def broadcast_cmd(
-    message: Message
-):
-
-    if not is_admin(
-        message.from_user.id
-    ):
-
+    # =========================
+    # ADMIN CHECK
+    # =========================
+    if not is_admin(message.from_user.id):
         return await message.answer(
-            "❌ Not allowed"
+            "🚫 ACCESS DENIED\n\n"
+            "😏 Kamu bukan admin.\n"
+            "Broadcast itu bukan mainan anak kecil."
         )
 
-    text = (
-        message.text
-        .replace("/broadcast", "")
-        .strip()
-    )
+    # =========================
+    # GET MESSAGE TEXT
+    # =========================
+    text = message.text.replace("/broadcast", "").strip()
 
     if not text:
-
         return await message.answer(
-            "❌ Format:\n/broadcast pesan"
+            "❌ FORMAT SALAH\n\n"
+            "Gunakan:\n"
+            "/broadcast pesan"
         )
 
-    async with db_pool.acquire() as conn:
-
-        users = await conn.fetch(
-            """
-            SELECT user_id
-            FROM users
-            """
+    # =========================
+    # LOAD USERS
+    # =========================
+    try:
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(
+                "SELECT user_id FROM users"
+            )
+    except Exception:
+        return await message.answer(
+            "⚠️ DATABASE ERROR\n\n"
+            "😏 Gagal ambil user list."
         )
 
+    # =========================
+    # BROADCAST LOOP
+    # =========================
     sent = 0
     failed = 0
+
+    await message.answer(
+        "📡 BROADCAST STARTED...\n"
+        "💀 Jangan ganggu sistem..."
+    )
 
     for user in users:
 
         try:
-
             await message.bot.send_message(
-                user["user_id"],
-                text
+                chat_id=user["user_id"],
+                text=text
             )
 
             sent += 1
 
-            await asyncio.sleep(
-                0.05
-            )
+            # anti flood Telegram
+            await asyncio.sleep(0.05)
 
         except Exception:
-
             failed += 1
+            continue
 
-            pass
-
+    # =========================
+    # RESULT
+    # =========================
     await message.answer(
-
-        f"✅ Broadcast selesai\n\n"
-        f"📤 Terkirim: {sent}\n"
-        f"❌ Gagal: {failed}"
-
+        "📡 BROADCAST FINISHED\n\n"
+        "━━━━━━━━━━━━━━\n"
+        f"📤 Sent   : {sent}\n"
+        f"❌ Failed : {failed}\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "💀 Semua user sudah kena pesan.\n"
+        "😏 Tinggal tunggu reaksi dunia."
     )
 # =========================
 # HELP TEXT
