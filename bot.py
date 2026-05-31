@@ -571,7 +571,24 @@ async def get_file_start(message: Message):
         "⚡ Cepetan Cok..."
     )
 # =========================
-# LOAD DATA FROM DB
+# NORMALIZER
+# =========================
+
+def normalize_type(t):
+    t = (t or "").lower().strip()
+
+    if t in ["photo", "image", "img"]:
+        return "photo"
+    if t in ["video", "vid"]:
+        return "video"
+    if t in ["doc", "document", "file"]:
+        return "document"
+
+    return "document"
+
+
+# =========================
+# LOAD MEDIA
 # =========================
 
 async def load_media(code: str):
@@ -580,29 +597,28 @@ async def load_media(code: str):
         return []
 
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
+        rows = await conn.fetch("""
             SELECT file_id, file_type, COALESCE(file_size, 0) AS file_size
             FROM medias
             WHERE code=$1
             ORDER BY id ASC
-            """,
-            code
-        )
+        """, code)
 
     return [
         {
             "file_id": r["file_id"],
-            "file_type": r["file_type"] or "document",
-            "file_size": r["file_size"] or 0
+            "file_type": normalize_type(r["file_type"]),
+            "file_size": r["file_size"]
         }
         for r in rows
     ]
 
 
 # =========================
-# SEND MEDIA (WAJIB)
+# SEND MEDIA GROUP (SAFE)
 # =========================
+
+from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 
 async def send_media(bot, chat_id: int, chunk: list):
 
@@ -611,10 +627,13 @@ async def send_media(bot, chat_id: int, chunk: list):
 
     media_group = []
 
-    for m in chunk:
+    for m in chunk[:10]:  # Telegram limit aman
         try:
-            file_type = m.get("file_type")
+            file_type = (m.get("file_type") or "").lower().strip()
             file_id = m.get("file_id")
+
+            if not file_id:
+                continue
 
             if file_type == "photo":
                 media_group.append(InputMediaPhoto(media=file_id))
@@ -626,17 +645,29 @@ async def send_media(bot, chat_id: int, chunk: list):
                 media_group.append(InputMediaDocument(media=file_id))
 
         except Exception as e:
-            print("SKIP MEDIA:", e)
+            print("SKIP MEDIA ITEM:", e)
+            continue
 
-    if media_group:
+    # kalau cuma 1 item, jangan pakai media_group (biar stabil)
+    if len(media_group) == 1:
+        try:
+            await bot.send_document(chat_id, media_group[0].media)
+        except Exception as e:
+            print("SINGLE MEDIA ERROR:", e)
+        return
+
+    if not media_group:
+        return
+
+    try:
         await bot.send_media_group(chat_id=chat_id, media=media_group)
-
-
+    except Exception as e:
+        print("SEND MEDIA GROUP ERROR:", e)
 # =========================
-# GETFILE HANDLER
+# GETFILE HANDLER (FIX)
 # =========================
 
-@router.message(F.text & ~F.text.startswith("/") & ~F.photo & ~F.video & ~F.document)
+@router.message(F.text & ~F.text.startswith("/"))
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
@@ -644,25 +675,38 @@ async def receive_code(message: Message):
 
     state = user_states.get(user_id)
 
-    # hanya aktif di mode getfile
+    # hanya aktif kalau mode getfile
     if not state or state.get("mode") != "getfile":
         return
 
-    if not text or text.startswith("/"):
+    if not text:
         return
 
-    match = re.search(r"(?:CODE[:\s]*)?([a-zA-Z0-9_]{6,})", text)
+    # =========================
+    # FLEXIBLE CODE PARSER
+    # =========================
+    match = re.search(
+        r"(?:CODE\s*[:=]?\s*)?([a-zA-Z0-9_]{4,})",
+        text,
+        re.IGNORECASE
+    )
 
     if not match:
         return await message.answer("❌ CODE tidak valid")
 
     code = match.group(1).strip()
 
+    # =========================
+    # LOAD DATA
+    # =========================
     data = await load_media(code)
 
     if not data:
-        return await message.answer("❌ CODE salah / tidak ditemukan")
+        return await message.answer("❌ CODE tidak ditemukan atau salah")
 
+    # =========================
+    # SET STATE VIEW
+    # =========================
     user_states[user_id] = {
         "mode": "view",
         "code": code,
@@ -670,54 +714,68 @@ async def receive_code(message: Message):
         "data": data
     }
 
+    page_history[user_id] = set()
+
+    # =========================
+    # RENDER UI
+    # =========================
     await render_first_page(message, user_id)
-
-
 # =========================
-# RENDER FIRST PAGE
+# KB BUILDER (FIXED)
 # =========================
 def build_kb(user_id, page, total_pages):
 
     history = page_history.get(user_id, set())
 
-    nav_row = [
-        InlineKeyboardButton(text="⬅ Prev", callback_data="prev")
-    ]
+    buttons = []
+
+    # NAV
+    buttons.append([
+        InlineKeyboardButton(text="⬅ Prev", callback_data="prev"),
+        InlineKeyboardButton(text="➡ Next", callback_data="next"),
+    ])
+
+    # PAGE ROW (max 5 per row)
+    page_row = []
 
     for i in range(total_pages):
-        if i == page:
-            emoji = "✅"
-        elif i in history:
-            emoji = "☑️"
-        else:
-            emoji = "❎"
 
-        nav_row.append(
+        emoji = "✅" if i == page else ("☑️" if i in history else "❎")
+
+        page_row.append(
             InlineKeyboardButton(
                 text=f"{i+1}{emoji}",
                 callback_data=f"page:{i}"
             )
         )
 
-    nav_row.append(
-        InlineKeyboardButton(text="Next ➡", callback_data="next")
-    )
+        if len(page_row) == 5:
+            buttons.append(page_row)
+            page_row = []
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        nav_row,
-        [
-            InlineKeyboardButton(
-                text="📢 JOIN CHANNEL",
-                url="https://t.me/+slzhVF3Lev0zZTRh"
-            ),
-            InlineKeyboardButton(
-                text="💬 GROUP CHAT",
-                url="https://t.me/gcbotkx"
-            )
-        ]
+    if page_row:
+        buttons.append(page_row)
+
+    # FOOTER
+    buttons.append([
+        InlineKeyboardButton(
+            text="📢 JOIN CHANNEL",
+            url="https://t.me/+slzhVF3Lev0zZTRh"
+        ),
+        InlineKeyboardButton(
+            text="💬 GROUP CHAT",
+            url="https://t.me/gcbotkx"
+        )
     ])
 
-async def render_first_page(message: Message, user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ==================
+# RENDER FIRST
+# ==================
+
+async def render_first_page(message, user_id: int):
 
     state = user_states.get(user_id)
     if not state:
@@ -732,29 +790,164 @@ async def render_first_page(message: Message, user_id: int):
     page = 0
     page_size = 5
 
-    chunk = data[:page_size]
+    start = page * page_size
+    chunk = data[start:start + page_size]
 
     total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
     text = (
         f"📦 CODE: {state['code']}\n"
-        f"📄 Page: 1/{total_pages}\n"
-        f"📁 Media: 1-{len(chunk)} / {len(data)}\n"
+        f"📄 Page: {page+1}/{total_pages}\n"
+        f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}\n"
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    try:
-        await message.answer(
-            text,
-            reply_markup=build_kb(user_id, page, total_pages)
-        )
-    except Exception as e:
-        print("TEXT ERROR:", e)
+    kb = build_kb(user_id, page, total_pages)
 
+    # =========================
+    # SEND TEXT + BUTTON
+    # =========================
+    sent_msg = await message.answer(text, reply_markup=kb)
+
+    # =========================
+    # SEND MEDIA (BATCH 1 PAGE)
+    # =========================
+    await send_media(message.bot, message.chat.id, chunk)
+
+# =================
+# RENDER PAGE
+# ==================
+
+async def render_page(call, user_id: int):
+
+    state = user_states.get(user_id)
+    if not state:
+        return await call.answer("Session expired")
+
+    data = state["data"]
+
+    page = state["page"]
+    page_size = 5
+
+    start = page * page_size
+    chunk = data[start:start + page_size]
+
+    total_pages = max(1, (len(data) + page_size - 1) // page_size)
+
+    # 🔥 AMBIL 1 ITEM PER PAGE (biar cocok edit_media)
+    item = chunk[0]
+
+    caption = (
+        f"📦 CODE: {state['code']}\n"
+        f"📄 Page: {page+1}/{total_pages}\n"
+        f"📁 Items: {start+1}-{start+len(chunk)} / {len(data)}"
+    )
+
+    kb = build_kb(user_id, page, total_pages)
+
+    file_type = item["file_type"]
+    file_id = item["file_id"]
+
+    if file_type == "photo":
+        media = InputMediaPhoto(media=file_id, caption=caption)
+
+    elif file_type == "video":
+        media = InputMediaVideo(media=file_id, caption=caption)
+
+    else:
+        media = InputMediaDocument(media=file_id, caption=caption)
+
+    await call.message.edit_media(media=media, reply_markup=kb)
+    await call.answer()
+# =========================
+# CALLBACK NEXT
+# =========================
+@router.callback_query(F.data == "next")
+async def next_page(call):
+
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    data = state["data"]
+    page_size = 5
+
+    max_page = max(0, (len(data) - 1) // page_size)
+
+    # 🔥 SAFETY CHECK
+    if state["page"] >= max_page:
+        return await call.answer("Last page")
+
+    state["page"] += 1
+
+    # 🔥 safety clamp (anti bug)
+    state["page"] = min(state["page"], max_page)
+
+    await render_page(call, user_id)
+    
+# =========================
+# CALLBACK PREV
+# =========================
+
+@router.callback_query(F.data == "prev")
+async def prev_page(call):
+
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    data = state["data"]
+    page_size = 5
+
+    max_page = max(0, (len(data) - 1) // page_size)
+
+    # 🔥 sudah di page pertama
+    if state["page"] <= 0:
+        state["page"] = 0
+        return await call.answer("First page")
+
+    state["page"] -= 1
+
+    # 🔥 safety clamp
+    state["page"] = max(0, state["page"])
+
+    await render_page(call, user_id)
+# =========================
+# CALLBACK JUMP PAGE
+# =========================
+@router.callback_query(F.data.startswith("page:"))
+async def goto_page(call):
+
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    data = state.get("data", [])
+    if not data:
+        return await call.answer("No data")
+
+    # 🔥 SAFE PARSE
     try:
-        await send_media(message.bot, message.chat.id, chunk)
-    except Exception as e:
-        print("MEDIA ERROR:", e)
+        page = int(call.data.split(":")[1])
+    except:
+        return await call.answer("Invalid page")
+
+    page_size = 5
+    max_page = max(0, (len(data) - 1) // page_size)
+
+    # 🔥 SAFE LIMIT
+    if page < 0 or page > max_page:
+        return await call.answer("Invalid page")
+
+    state["page"] = page
+
+    await render_page(call, user_id)
 # ======================
 # ADD USER FUNCTION
 # =========================
