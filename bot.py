@@ -627,74 +627,16 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
 # SEND PAGE
 # =========================
 
-import time
-import random
-import asyncio
-
-
-async def auto_delete(message, delay: int):
-    await asyncio.sleep(delay)
-    try:
-        await message.delete()
-    except:
-        pass
-
-
-COOLDOWN_MSGS = [
-    "⏳ Slow down bro...\n5 detik aja gak sabar?",
-    "⏳ Global lock aktif\nJangan spam, bot bukan dewa 😌",
-    "⏳ Santai dulu, server gak lari 😏"
-]
-
-
-def check_cooldown(cache: dict, key, limit: int):
-    now = time.time()
-    last = cache.get(key, 0)
-
-    if now - last < limit:
-        return False, limit - (now - last)
-
-    cache[key] = now
-    return True, 0
-
-
-# =========================
-# SEND PAGE (NORMAL FIX)
-# =========================
 async def send_page(message: Message, user_id: int):
 
     state = user_states.get(user_id)
+
     if not state:
         return await message.answer("❌ Session expired, kirim CODE lagi")
 
     data = state["data"]
     page_size = 5
     page = state["page"]
-
-    # =========================
-    # GLOBAL COOLDOWN (5 detik)
-    # =========================
-    ok, remain = check_cooldown(cooldown.setdefault("global", {}), user_id, 5)
-
-    if not ok:
-        warn = await message.answer(
-            f"{random.choice(COOLDOWN_MSGS)}\n⏳ sisa {int(remain)} detik"
-        )
-        asyncio.create_task(auto_delete(warn, 3))
-        return
-
-    # =========================
-    # PAGE COOLDOWN (24 JAM)
-    # =========================
-    key = (user_id, page)
-    ok_page, _ = check_cooldown(cooldown.setdefault("page", {}), key, 86400)
-
-    if not ok_page:
-        warn = await message.answer(
-            "⛔ Page ini masih lock\n💀 jangan serakah"
-        )
-        asyncio.create_task(auto_delete(warn, 5))
-        return
 
     # =========================
     # PAGINATION
@@ -725,7 +667,7 @@ async def send_page(message: Message, user_id: int):
     )
 
     # =========================
-    # MEDIA (OPTIONAL)
+    # MEDIA SEND (SAFE)
     # =========================
     try:
         media_group = []
@@ -741,11 +683,11 @@ async def send_page(message: Message, user_id: int):
         if media_group:
             await message.answer_media_group(media_group)
 
-    except:
+    except Exception:
         pass
 
     # =========================
-    # 🔥 INI YANG PENTING: TOMBOL PASTI KELUAR
+    # 🔥 BUTTON (INI WAJIB TERKIRIM)
     # =========================
     await message.answer(
         text,
