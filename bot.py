@@ -649,6 +649,8 @@ async def send_media(bot, chat_id: int, chunk: list):
 # GETFILE HANDLER (FIX)
 # =========================
 
+import re
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def receive_code(message: Message):
 
@@ -663,40 +665,83 @@ async def receive_code(message: Message):
     if not text:
         return
 
-    match = re.search(
-        r"(?:CODE\s*[:=]?\s*)?([a-zA-Z0-9_]{4,})",
+    # =========================
+    # MULTI CODE EXTRACTION (ROBUST)
+    # =========================
+    codes = re.findall(
+        r"CODE\s*[:=]?\s*([A-Za-z0-9_]{6,})",
         text,
         re.IGNORECASE
     )
 
-    if not match:
-        return await message.answer("❌ CODE tidak valid")
+    # fallback: user cuma paste code
+    if not codes:
+        codes = re.findall(
+            r"\b([A-Za-z0-9_]{10,})\b",
+            text
+        )
 
-    code = match.group(1)
+    # fallback tambahan (CN / variation)
+    if not codes:
+        codes = re.findall(
+            r"(?:代码|CODE)\s*[:=]?\s*([A-Za-z0-9_]{6,})",
+            text,
+            re.IGNORECASE
+        )
 
-    try:
-        data = await load_media(code)
-    except Exception as e:
-        print("DB ERROR:", e)
-        return await message.answer("❌ Server error load data")
+    # =========================
+    # VALIDATION
+    # =========================
+    codes = list(dict.fromkeys(codes))  # remove duplicate
 
-    if not data:
+    if not codes:
         return await message.answer("❌ CODE tidak ditemukan")
 
+    # limit safety (anti spam)
+    codes = codes[:10]
+
+    all_data = []
+
+    # =========================
+    # LOAD ALL CODES
+    # =========================
+    for code in codes:
+        code = code.strip()
+
+        if len(code) < 6:
+            continue
+
+        try:
+            data = await load_media(code)
+            if data:
+                all_data.extend(data)
+        except Exception as e:
+            print(f"LOAD ERROR {code}:", e)
+
+    if not all_data:
+        return await message.answer("❌ Semua CODE tidak valid")
+
+    # =========================
+    # SET STATE
+    # =========================
     user_states[user_id] = {
         "mode": "view",
-        "code": code,
+        "code": codes[0],
         "page": 0,
-        "data": data
+        "data": all_data
     }
 
     page_history[user_id] = set()
 
+    # =========================
+    # RENDER UI
+    # =========================
     try:
         await render_first_page(message, user_id)
     except Exception as e:
         print("RENDER ERROR:", e)
-        await message.answer("❌ Error render file")
+        await message.answer("❌ Error saat menampilkan file")
+        
 # =========================
 # KB BUILDER (FIXED)
 # =========================
@@ -780,7 +825,12 @@ async def render_first_page(message, user_id: int):
     total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
     # =========================
-    # TEXT HEADER
+    # MEDIA FIRST (IMPORTANT)
+    # =========================
+    await send_media(message.bot, message.chat.id, chunk)
+
+    # =========================
+    # CONTROL MESSAGE (BUTTON DI BAWAH MEDIA)
     # =========================
     text = (
         f"📦 CODE: {state['code']}\n"
@@ -791,18 +841,9 @@ async def render_first_page(message, user_id: int):
 
     kb = build_kb(user_id, page, total_pages)
 
-    # =========================
-    # SEND HEADER MESSAGE (WITH KB)
-    # =========================
     msg = await message.answer(text, reply_markup=kb)
 
-    # simpan message id biar nanti bisa edit (WAJIB kalau mau upgrade lanjut)
     state["msg_id"] = msg.message_id
-
-    # =========================
-    # SEND MEDIA (PAGE CHUNK)
-    # =========================
-    await send_media(message.bot, message.chat.id, chunk)
 
 # =================
 # RENDER PAGE
