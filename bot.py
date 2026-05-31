@@ -661,38 +661,48 @@ async def send_page(
 ):
 
     state = user_states[user_id]
-
     data = state["data"]
 
     page_size = 5
-
     page = state["page"]
 
     start = page * page_size
     end = start + page_size
-
     chunk = data[start:end]
 
-    total_pages = (
-        len(data) + page_size - 1
-    ) // page_size
+    total_pages = (len(data) + page_size - 1) // page_size
+    total_media = len(data)
 
     show_numbers = total_pages > 1
 
+    # =========================
+    # SAFE CALC RANGE
+    # =========================
+    current_start = start + 1
+    current_end = start + len(chunk)
+
+    # =========================
+    # SAFE SIZE CALC
+    # =========================
+    try:
+        size_mb = round(
+            sum(x["file_size"] for x in data) / (1024 * 1024),
+            2
+        )
+    except:
+        size_mb = 0
+
     text = (
+        f"📦 CODE: {state['code']}\n"
+        f"📄 Halaman saat ini: {page+1}/{total_pages}\n"
+        f"📁 Media: {current_start}-{current_end} / {total_media}\n"
+        f"💾 Total Size: {size_mb} MB\n"
+        f"🔒 Powered By TZY FILE BOT"
+    )
 
-    f"📦 CODE: {state['code']}\n"
-
-    f"📄 Halaman saat ini: {page+1}/{total_pages}\n"
-
-    f"📁 Media: {current_media}-{min(end,total_media)} / {total_media}\n"
-
-    f"💾 Total Size: {size_mb} MB\n"
-
-    f"🔒 Powered By TZY FILE BOT"
-
-)
-
+    # =========================
+    # SINGLE MEDIA
+    # =========================
     if len(chunk) == 1:
 
         media = chunk[0]
@@ -705,40 +715,43 @@ async def send_page(
             total_pages,
             show_numbers
         )
-
         return
 
+    # =========================
+    # MEDIA GROUP
+    # =========================
     media_group = []
 
     for media in chunk:
 
         if media["file_type"] == "photo":
-
             media_group.append(
-                InputMediaPhoto(
-                    media=media["file_id"]
-                )
+                InputMediaPhoto(media=media["file_id"])
             )
 
         elif media["file_type"] == "video":
-
             media_group.append(
-                InputMediaVideo(
-                    media=media["file_id"]
-                )
+                InputMediaVideo(media=media["file_id"])
             )
 
         else:
-
             media_group.append(
-                InputMediaDocument(
-                    media=media["file_id"]
-                )
+                InputMediaDocument(media=media["file_id"])
             )
 
-    await message.answer_media_group(
-        media_group
-    )
+    try:
+        await message.answer_media_group(media_group)
+    except:
+        # kalau Telegram limit / flood / error, fallback
+        for m in chunk:
+            await send_single(
+                message,
+                m,
+                text,
+                page,
+                total_pages,
+                show_numbers
+            )
 
     await message.answer(
         text,
@@ -748,50 +761,6 @@ async def send_page(
             show_numbers
         )
     )
-
-# =========================
-# SEND SINGLE
-# =========================
-
-async def send_single(
-    message,
-    media,
-    text,
-    page,
-    total_pages,
-    show_numbers
-):
-
-    kb = build_kb(
-        page,
-        total_pages,
-        show_numbers
-    )
-
-    if media["file_type"] == "photo":
-
-        await message.answer_photo(
-            media["file_id"],
-            caption=text,
-            reply_markup=kb
-        )
-
-    elif media["file_type"] == "video":
-
-        await message.answer_video(
-            media["file_id"],
-            caption=text,
-            reply_markup=kb
-        )
-
-    else:
-
-        await message.answer_document(
-            media["file_id"],
-            caption=text,
-            reply_markup=kb
-        )
-
 # =========================
 # PAGINATION
 # =========================
