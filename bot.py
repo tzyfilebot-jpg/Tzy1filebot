@@ -567,55 +567,41 @@ async def load_media(code: str):
 # =========================
 
 @router.message(F.text)
-
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
+    text = message.text.strip()
 
-    text = message.text
-
+    # ❌ abaikan command & tombol menu
     if text.startswith("/"):
+        return
 
+    if text in [
+        "📤 Up File",
+        "📥 Get File",
+        "👤 Account",
+        "💎 VIP",
+        "❓ Help"
+    ]:
         return
 
     state = user_states.get(user_id)
 
+    # 🔥 PENTING: hanya aktif saat getfile
     if not state or state.get("mode") != "getfile":
-
         return
 
-    # =========================
-
-    # AUTO EXTRACT CODE
-
-    # =========================
-
-    match = re.search(r"tzy_\d+v_\d+p_\d+d_[a-z0-9]+", text)
-
-    if not match:
-
-        return  # tidak ada code di teks
-
-    code = match.group()
-
-    data = await load_media(code)
+    data = await load_media(text)
 
     if not data:
-
-        await message.answer("❌ CODE tidak ditemukan / invalid")
-
+        await message.answer("❌ CODE tidak ditemukan atau salah")
         return
 
     user_states[user_id] = {
-
         "mode": "view",
-
-        "code": code,
-
+        "code": text,
         "page": 0,
-
         "data": data
-
     }
 
     await send_page(message, user_id)
