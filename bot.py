@@ -623,6 +623,8 @@ async def receive_code(message: Message):
     }
 
     await render_first_page(message, user_id)
+from aiogram.types import InputMediaPhoto
+
 async def render_first_page(message: Message, user_id: int):
 
     state = user_states[user_id]
@@ -644,9 +646,20 @@ async def render_first_page(message: Message, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
+    # 1. kirim info + tombol
     await message.answer(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
+    )
+
+    # 2. kirim media
+    media_group = [
+        InputMediaPhoto(media=item) for item in chunk
+    ]
+
+    await message.bot.send_media_group(
+        chat_id=message.chat.id,
+        media=media_group
     )
 # =========================
 # BUILD KEYBOARD
