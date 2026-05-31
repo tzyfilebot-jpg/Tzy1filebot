@@ -631,6 +631,7 @@ import time
 import random
 import asyncio
 
+
 async def auto_delete(message, delay: int):
     await asyncio.sleep(delay)
     try:
@@ -658,44 +659,35 @@ def check_cooldown(cache: dict, key, limit: int):
 
 
 # =========================
-# SEND PAGE FIXED (STABLE)
+# SEND PAGE (NORMAL FIX)
 # =========================
 async def send_page(message: Message, user_id: int):
 
     state = user_states.get(user_id)
     if not state:
-        return
+        return await message.answer("❌ Session expired, kirim CODE lagi")
 
     data = state["data"]
     page_size = 5
     page = state["page"]
 
     # =========================
-    # GLOBAL COOLDOWN
+    # GLOBAL COOLDOWN (5 detik)
     # =========================
-    ok, remain = check_cooldown(
-        cooldown.setdefault("global", {}),
-        user_id,
-        5
-    )
+    ok, remain = check_cooldown(cooldown.setdefault("global", {}), user_id, 5)
 
     if not ok:
         warn = await message.answer(
             f"{random.choice(COOLDOWN_MSGS)}\n⏳ sisa {int(remain)} detik"
         )
-        asyncio.create_task(auto_delete(warn, random.randint(2, 4)))  # FIX TYPO
+        asyncio.create_task(auto_delete(warn, 3))
         return
 
     # =========================
-    # PAGE COOLDOWN
+    # PAGE COOLDOWN (24 JAM)
     # =========================
     key = (user_id, page)
-
-    ok_page, _ = check_cooldown(
-        cooldown.setdefault("page", {}),
-        key,
-        86400
-    )
+    ok_page, _ = check_cooldown(cooldown.setdefault("page", {}), key, 86400)
 
     if not ok_page:
         warn = await message.answer(
@@ -705,12 +697,7 @@ async def send_page(message: Message, user_id: int):
         return
 
     # =========================
-    # HISTORY
-    # =========================
-    page_history.setdefault(user_id, set()).add(page)
-
-    # =========================
-    # PAGINATION SAFE
+    # PAGINATION
     # =========================
     start = page * page_size
     chunk = data[start:start + page_size]
@@ -738,26 +725,27 @@ async def send_page(message: Message, user_id: int):
     )
 
     # =========================
-    # MEDIA GROUP
+    # MEDIA (OPTIONAL)
     # =========================
-    media_group = []
-
-    for media in chunk:
-        if media["file_type"] == "photo":
-            media_group.append(InputMediaPhoto(media=media["file_id"]))
-        elif media["file_type"] == "video":
-            media_group.append(InputMediaVideo(media=media["file_id"]))
-        else:
-            media_group.append(InputMediaDocument(media=media["file_id"]))
-
     try:
+        media_group = []
+
+        for media in chunk:
+            if media["file_type"] == "photo":
+                media_group.append(InputMediaPhoto(media=media["file_id"]))
+            elif media["file_type"] == "video":
+                media_group.append(InputMediaVideo(media=media["file_id"]))
+            else:
+                media_group.append(InputMediaDocument(media=media["file_id"]))
+
         if media_group:
             await message.answer_media_group(media_group)
+
     except:
         pass
 
     # =========================
-    # ⚡ TOMBOL WAJIB DI SINI
+    # 🔥 INI YANG PENTING: TOMBOL PASTI KELUAR
     # =========================
     await message.answer(
         text,
