@@ -567,33 +567,55 @@ async def load_media(code: str):
 # =========================
 
 @router.message(F.text)
+
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
-    text = message.text.strip()
+
+    text = message.text
 
     if text.startswith("/"):
+
         return
 
     state = user_states.get(user_id)
 
-    if not state:
+    if not state or state.get("mode") != "getfile":
+
         return
 
-    if state.get("mode") != "getfile":
-        return
+    # =========================
 
-    data = await load_media(text)
+    # AUTO EXTRACT CODE
+
+    # =========================
+
+    match = re.search(r"tzy_\d+v_\d+p_\d+d_[a-z0-9]+", text)
+
+    if not match:
+
+        return  # tidak ada code di teks
+
+    code = match.group()
+
+    data = await load_media(code)
 
     if not data:
-        await message.answer("❌ CODE tidak ditemukan")
+
+        await message.answer("❌ CODE tidak ditemukan / invalid")
+
         return
 
     user_states[user_id] = {
+
         "mode": "view",
-        "code": text,
+
+        "code": code,
+
         "page": 0,
+
         "data": data
+
     }
 
     await send_page(message, user_id)
@@ -618,11 +640,11 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
         for i in range(total_pages):
 
             if i == page:
-                emoji = "💙"  # current page
+                emoji = "✅"  # current page
             elif i in history:
-                emoji = "🤍"  # already opened
+                emoji = "☑️"  # already opened
             else:
-                emoji = "❤️"  # not opened yet
+                emoji = "❎"  # not opened yet
 
             nav.append(
                 InlineKeyboardButton(
