@@ -563,43 +563,34 @@ async def load_media(code: str):
 # GETFILE
 # =========================
 
-CODE_PATTERN = re.compile(r"tzy[-a-zA-Z0-9]{10,80}")
-
 @router.message(F.text & ~F.text.startswith("/"))
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
-    text = message.text
+    text = message.text.strip()
 
     state = user_states.get(user_id)
+
     if not state or state.get("mode") != "getfile":
         return
 
     # =========================
-    # 🔥 EXTRACT CODE DARI TEKS CAMPURAN
-    # =========================
-    match = CODE_PATTERN.search(text)
-
-    if not match:
-        return  # tidak ada code sama sekali
-
-    code = match.group(0)
-
-    # =========================
     # LOAD DATA
     # =========================
-    data = await load_media(code)
+    data = await load_media(text)
+
+    # 🔥 DEBUG TARUH DI SINI
+    print("CODE DITERIMA:", text)
+    print("STATE:", state)
+    print("DATA:", data)
 
     if not data:
-        await message.answer(
-            "❌ CODE tidak ditemukan atau salah\n"
-            "💀 Jangan asal tempel, cek lagi."
-        )
+        await message.answer("❌ CODE tidak ditemukan atau salah")
         return
 
     user_states[user_id] = {
         "mode": "view",
-        "code": code,
+        "code": text,
         "page": 0,
         "data": data
     }
