@@ -548,19 +548,10 @@ async def receive_code(message: Message):
     if not state or state.get("mode") != "getfile":
         return
 
-    # =========================
-    # LOAD DATA
-    # =========================
     data = await load_media(text)
 
-    # 🔥 DEBUG TARUH DI SINI
-    print("CODE DITERIMA:", text)
-    print("STATE:", state)
-    print("DATA:", data)
-
     if not data:
-        await message.answer("❌ CODE tidak ditemukan atau salah")
-        return
+        return await message.answer("❌ CODE tidak ditemukan atau salah")
 
     user_states[user_id] = {
         "mode": "view",
@@ -569,7 +560,33 @@ async def receive_code(message: Message):
         "data": data
     }
 
-    await send_page(message, user_id)
+    await render_first_page(message, user_id)
+
+async def render_first_page(message: Message, user_id: int):
+
+    state = user_states[user_id]
+    data = state["data"]
+
+    page = 0
+    page_size = 5
+
+    start = 0
+    chunk = data[:page_size]
+
+    total_pages = (len(data) + page_size - 1) // page_size
+    total_media = len(data)
+
+    text = (
+        f"📦 CODE: {state['code']}\n"
+        f"📄 Page: 1/{total_pages}\n"
+        f"📁 Media: 1-{len(chunk)} / {total_media}\n"
+        f"🔒 Powered By TZY FILE BOT"
+    )
+
+    await message.answer(
+        text,
+        reply_markup=build_kb(user_id, page, total_pages)
+    )
 # =========================
 # BUILD KEYBOARD
 # =========================
@@ -623,40 +640,74 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
             ]
         ]
     )
+
+@router.callback_query(F.data == "prev")
+async def prev_page(call: CallbackQuery):
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    if state["page"] > 0:
+        state["page"] -= 1
+
+    await call.answer()
+    await render_page(call, user_id)
+
+
+@router.callback_query(F.data == "next")
+async def next_page(call: CallbackQuery):
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    max_page = (len(state["data"]) - 1) // 5
+
+    if state["page"] < max_page:
+        state["page"] += 1
+
+    await call.answer()
+    await render_page(call, user_id)
+
+@router.callback_query(F.data.startswith("page:"))
+async def goto_page(call: CallbackQuery):
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    page = int(call.data.split(":")[1])
+    state["page"] = page
+
+    await call.answer()
+    await render_page(call, user_id)
+    
 # =========================
 # SEND PAGE
 # =========================
 
-async def send_page(message: Message, user_id: int):
+async def render_page(call: CallbackQuery, user_id: int):
 
     state = user_states.get(user_id)
 
     if not state:
-        return await message.answer("❌ Session expired, kirim CODE lagi")
+        return await call.message.answer("❌ Session expired, kirim CODE lagi")
 
     data = state["data"]
     page_size = 5
     page = state["page"]
 
-    # =========================
-    # PAGINATION
-    # =========================
     start = page * page_size
     chunk = data[start:start + page_size]
 
     total_pages = (len(data) + page_size - 1) // page_size
     total_media = len(data)
 
-    if not chunk:
-        return await message.answer(
-            "❌ Data kosong di page ini",
-            reply_markup=build_kb(user_id, page, total_pages)
-        )
-
-    size_mb = round(
-        sum(x["file_size"] for x in data) / (1024 * 1024),
-        2
-    )
+    size_mb = round(sum(x["file_size"] for x in data) / (1024 * 1024), 2)
 
     text = (
         f"📦 CODE: {state['code']}\n"
@@ -667,7 +718,7 @@ async def send_page(message: Message, user_id: int):
     )
 
     # =========================
-    # MEDIA SEND (SAFE)
+    # MEDIA SEND
     # =========================
     try:
         media_group = []
@@ -681,15 +732,12 @@ async def send_page(message: Message, user_id: int):
                 media_group.append(InputMediaDocument(media=media["file_id"]))
 
         if media_group:
-            await message.answer_media_group(media_group)
+            await call.message.answer_media_group(media_group)
 
-    except Exception:
+    except:
         pass
 
-    # =========================
-    # 🔥 BUTTON (INI WAJIB TERKIRIM)
-    # =========================
-    await message.answer(
+    await call.message.answer(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
