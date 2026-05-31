@@ -51,7 +51,7 @@ VIP_LINK = os.getenv("VIP_LINK")
 # DB POOL
 # =========================
 
-db_pool: asyncpg.Pool = None
+db_pool: asyncpg.Pool | None = None
 
 async def init_db():
     global db_pool
@@ -91,10 +91,6 @@ async def init_db():
             file_type TEXT,
             file_size BIGINT
         );
-
-        ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS fullname TEXT;
-
         """)
 # =========================
 # CACHE
@@ -158,7 +154,7 @@ async def check_force_sub(
             "creator"
         ]
 
-    except TelegramBadRequest:
+    except Exception:
 
         return False
 
@@ -192,22 +188,9 @@ async def start(message: Message, bot: Bot):
 
     user = message.from_user
 
-    await add_user(
-        user.id,
-        user.username or "none",
-        user.full_name
-    )
-
-    # =========================
-    # FORCE SUB CHECK
-    # =========================
+    # FORCE SUB FIRST (lebih efisien)
     if FORCE_CHANNEL:
-
-        ok = await check_force_sub(
-            bot,
-            user.id,
-            FORCE_CHANNEL
-        )
+        ok = await check_force_sub(bot, user.id, FORCE_CHANNEL)
 
         if not ok:
             return await message.answer(
@@ -217,9 +200,17 @@ async def start(message: Message, bot: Bot):
                 reply_markup=force_kb(FORCE_CHANNEL)
             )
 
-    # =========================
-    # SUCCESS START
-    # =========================
+    # SAVE USER (safe)
+    try:
+        await add_user(
+            user.id,
+            user.username or "none",
+            user.full_name
+        )
+    except Exception:
+        pass
+
+    # RESPONSE
     await message.answer(
         "🔥 BOT ONLINE\n\n"
         "😏 Selamat datang di FILE CODE SYSTEM.\n\n"
@@ -335,24 +326,23 @@ async def handle_media(message: Message):
     if not s or not s.get("msg_id"):
         return
 
-    # AMBIL FILE
     if message.photo:
         file_id = message.photo[-1].file_id
         file_type = "photo"
         size = message.photo[-1].file_size or 0
-        s["photo"] += 1
+        s["photo"] = s.get("photo", 0) + 1
 
     elif message.video:
         file_id = message.video.file_id
         file_type = "video"
         size = message.video.file_size or 0
-        s["video"] += 1
+        s["video"] = s.get("video", 0) + 1
 
     else:
         file_id = message.document.file_id
         file_type = "document"
         size = message.document.file_size or 0
-        s["document"] += 1
+        s["document"] = s.get("document", 0) + 1
 
     s["items"].append({
         "file_id": file_id,
@@ -360,34 +350,26 @@ async def handle_media(message: Message):
         "size": size
     })
 
-    # 💀 auto delete user spam
     try:
         await message.delete()
     except:
         pass
 
-    # 🧠 anti flood ringan
     now = time.time()
-    last = last_edit_time.get(user_id, 0)
-
-    if now - last < 0.9:
+    if now - last_edit_time.get(user_id, 0) < 0.9:
         return
-
     last_edit_time[user_id] = now
 
     total = len(s["items"])
     size_mb = round(sum(x["size"] for x in s["items"]) / (1024 * 1024), 2)
 
-    # 💀 SAVAGE TEXT UI
     text = (
         "📤 UPLOADING...\n\n"
-        f"🎥 Video     : {s['video']}\n"
-        f"🖼 Photo     : {s['photo']}\n"
-        f"📁 Document  : {s['document']}\n"
+        f"🎥 Video     : {s.get('video', 0)}\n"
+        f"🖼 Photo     : {s.get('photo', 0)}\n"
+        f"📁 Document  : {s.get('document', 0)}\n"
         f"📦 Total     : {total}\n"
-        f"💾 Size      : {size_mb} MB\n\n"
-        "😏 Bot bekerja...\n"
-        "💀 Jangan cuma nonton, kirim semua file kamu."
+        f"💾 Size      : {size_mb} MB\n"
     )
 
     try:
@@ -397,7 +379,7 @@ async def handle_media(message: Message):
             text=text,
             reply_markup=upload_kb()
         )
-    except:
+    except TelegramBadRequest:
         pass
 # =========================
 # GENERATE CODE
@@ -641,23 +623,9 @@ def build_kb(user_id, page, total_pages, show_numbers=True):
         ]
     )
 
-@router.callback_query(F.data == "prev")
-async def prev_page(call: CallbackQuery):
-    user_id = call.from_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        return await call.answer("Session expired")
-
-    if state["page"] > 0:
-        state["page"] -= 1
-
-    await call.answer()
-    await render_page(call, user_id)
-
-
 @router.callback_query(F.data == "next")
 async def next_page(call: CallbackQuery):
+
     user_id = call.from_user.id
     state = user_states.get(user_id)
 
@@ -667,13 +635,32 @@ async def next_page(call: CallbackQuery):
     max_page = (len(state["data"]) - 1) // 5
 
     if state["page"] < max_page:
+        page_history.setdefault(user_id, set()).add(state["page"])
         state["page"] += 1
+
+    await call.answer()
+    await render_page(call, user_id)
+
+
+@router.callback_query(F.data == "prev")
+async def prev_page(call: CallbackQuery):
+
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    if state["page"] > 0:
+        page_history.setdefault(user_id, set()).add(state["page"])
+        state["page"] -= 1
 
     await call.answer()
     await render_page(call, user_id)
 
 @router.callback_query(F.data.startswith("page:"))
 async def goto_page(call: CallbackQuery):
+
     user_id = call.from_user.id
     state = user_states.get(user_id)
 
@@ -681,6 +668,8 @@ async def goto_page(call: CallbackQuery):
         return await call.answer("Session expired")
 
     page = int(call.data.split(":")[1])
+
+    page_history.setdefault(user_id, set()).add(state["page"])
     state["page"] = page
 
     await call.answer()
@@ -693,7 +682,6 @@ async def goto_page(call: CallbackQuery):
 async def render_page(call: CallbackQuery, user_id: int):
 
     state = user_states.get(user_id)
-
     if not state:
         return await call.message.answer("❌ Session expired, kirim CODE lagi")
 
@@ -717,9 +705,13 @@ async def render_page(call: CallbackQuery, user_id: int):
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # =========================
-    # MEDIA SEND
-    # =========================
+    # 🔥 DELETE OLD MEDIA (ANTI SPAM CHAT)
+    try:
+        await call.message.delete()
+    except:
+        pass
+
+    # SEND MEDIA
     try:
         media_group = []
 
