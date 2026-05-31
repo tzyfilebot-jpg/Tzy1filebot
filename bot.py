@@ -631,6 +631,13 @@ import time
 import random
 import asyncio
 
+async def auto_delete(message, delay: int):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except:
+        pass
+        
 COOLDOWN_MSGS = [
     "⏳ Slow down bro...\n5 detik aja gak sabar?",
     "⏳ Global lock aktif\nJangan spam, bot bukan dewa 😌",
@@ -672,7 +679,7 @@ async def send_page(message: Message, user_id: int):
         warn = await message.answer(
             f"{random.choice(COOLDOWN_MSGS)}\n⏳ sisa {int(remain)} detik"
         )
-        asyncio.create_task(auto_delete(warn, 3))
+        asyncio.create_task(auto_delete(warn, random.rendint(2, 4)))
         return
 
     # =========================
