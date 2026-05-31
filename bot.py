@@ -413,14 +413,13 @@ async def handle_media(message: Message):
 
 def generate_code(v, p, d):
 
-    rand = "".join(
-        secrets.choice(string.ascii_letters + string.digits)
-        for _ in range(18)   # dari 10 → 18 (lebih kuat)
-    )
+    import hashlib
 
-    extra = secrets.token_hex(4)  # tambahan random hex
+    base = f"{v}{p}{d}{secrets.token_hex(4)}"
 
-    return f"tzy-{v}{p}{d}-{extra}-{rand}"
+    rand = hashlib.sha1(base.encode()).hexdigest()[:12]
+
+    return f"tzy_{v}v_{p}p_{d}d_{rand}"
 
 # =========================
 # DONE
