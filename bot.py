@@ -657,26 +657,32 @@ async def receive_code(message: Message):
 
     state = user_states.get(user_id)
 
-    # hanya aktif kalau mode getfile
     if not state or state.get("mode") != "getfile":
         return
 
-    code = extract_code(text)
+    if not text:
+        return
 
-    if not code:
+    match = re.search(
+        r"(?:CODE\s*[:=]?\s*)?([a-zA-Z0-9_]{4,})",
+        text,
+        re.IGNORECASE
+    )
+
+    if not match:
         return await message.answer("❌ CODE tidak valid")
 
-    # =========================
-    # LOAD DATA
-    # =========================
-    data = await load_media(code)
+    code = match.group(1)
+
+    try:
+        data = await load_media(code)
+    except Exception as e:
+        print("DB ERROR:", e)
+        return await message.answer("❌ Server error load data")
 
     if not data:
-        return await message.answer("❌ CODE tidak ditemukan atau salah")
+        return await message.answer("❌ CODE tidak ditemukan")
 
-    # =========================
-    # SET STATE VIEW
-    # =========================
     user_states[user_id] = {
         "mode": "view",
         "code": code,
@@ -686,10 +692,11 @@ async def receive_code(message: Message):
 
     page_history[user_id] = set()
 
-    # =========================
-    # RENDER UI
-    # =========================
-    await render_first_page(message, user_id)
+    try:
+        await render_first_page(message, user_id)
+    except Exception as e:
+        print("RENDER ERROR:", e)
+        await message.answer("❌ Error render file")
 # =========================
 # KB BUILDER (FIXED)
 # =========================
