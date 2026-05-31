@@ -431,17 +431,13 @@ async def handle_media(message: Message):
 def generate_code(v, p, d):
 
     rand = "".join(
-
-        secrets.choice(
-            string.ascii_lowercase +
-            string.digits
-        )
-
-        for _ in range(10)
-
+        secrets.choice(string.ascii_letters + string.digits)
+        for _ in range(18)   # dari 10 → 18 (lebih kuat)
     )
 
-    return f"tzy_{v}v_{p}p_{d}d_{rand}"
+    extra = secrets.token_hex(4)  # tambahan random hex
+
+    return f"tzy-{v}{p}{d}-{extra}-{rand}"
 
 # =========================
 # DONE
@@ -563,43 +559,46 @@ async def load_media(code: str):
             code
         )
 # =========================
-# RECEIVE CODE
+# GETFILE
 # =========================
 
-@router.message(F.text)
+CODE_PATTERN = re.compile(r"tzy[-a-zA-Z0-9]{10,80}")
+
+@router.message(F.text & ~F.text.startswith("/"))
 async def receive_code(message: Message):
 
     user_id = message.from_user.id
-    text = message.text.strip()
-
-    # ❌ abaikan command & tombol menu
-    if text.startswith("/"):
-        return
-
-    if text in [
-        "📤 Up File",
-        "📥 Get File",
-        "👤 Account",
-        "💎 VIP",
-        "❓ Help"
-    ]:
-        return
+    text = message.text
 
     state = user_states.get(user_id)
-
-    # 🔥 PENTING: hanya aktif saat getfile
     if not state or state.get("mode") != "getfile":
         return
 
-    data = await load_media(text)
+    # =========================
+    # 🔥 EXTRACT CODE DARI TEKS CAMPURAN
+    # =========================
+    match = CODE_PATTERN.search(text)
+
+    if not match:
+        return  # tidak ada code sama sekali
+
+    code = match.group(0)
+
+    # =========================
+    # LOAD DATA
+    # =========================
+    data = await load_media(code)
 
     if not data:
-        await message.answer("❌ CODE tidak ditemukan atau salah")
+        await message.answer(
+            "❌ CODE tidak ditemukan atau salah\n"
+            "💀 Jangan asal tempel, cek lagi."
+        )
         return
 
     user_states[user_id] = {
         "mode": "view",
-        "code": text,
+        "code": code,
         "page": 0,
         "data": data
     }
