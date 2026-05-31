@@ -575,9 +575,8 @@ async def get_file_start(message: Message):
 # =========================
 
 async def load_media(code: str):
-
     async with db_pool.acquire() as conn:
-        return await conn.fetch(
+        rows = await conn.fetch(
             """
             SELECT file_id, file_type, file_size
             FROM medias
@@ -586,6 +585,7 @@ async def load_media(code: str):
             """,
             code
         )
+        return [dict(r) for r in rows]
 # =========================
 # GETFILE
 # =========================
@@ -597,23 +597,18 @@ async def receive_code(message: Message):
     text = message.text or ""
 
     state = user_states.get(user_id)
-
     if not state or state.get("mode") != "getfile":
         return
 
-    # 🔥 ambil CODE dari pesan
     match = re.search(r"CODE:\s*(\S+)", text)
-
     if not match:
-        return await message.answer("❌ CODE tidak ditemukan dalam pesan")
+        return await message.answer("❌ CODE tidak ditemukan")
 
-    code = match.group(1).strip()
+    code = match.group(1)
 
-    # 🔥 ambil data dari code
     data = await load_media(code)
-
     if not data:
-        return await message.answer("❌ CODE tidak ditemukan atau salah")
+        return await message.answer("❌ CODE salah / tidak ditemukan")
 
     user_states[user_id] = {
         "mode": "view",
@@ -640,26 +635,18 @@ async def render_first_page(message: Message, user_id: int):
 
     text = (
         f"📦 CODE: {state['code']}\n"
-        f"📄 Page: {page + 1}/{total_pages}\n"
-        f"📁 Media: {start + 1}-{start + len(chunk)} / {total_media}\n"
+        f"📄 Page: 1/{total_pages}\n"
+        f"📁 Media: 1-{len(chunk)} / {total_media}\n"
         f"🔒 Powered By TZY FILE BOT"
     )
 
-    # 1. kirim info + tombol
     await message.answer(
         text,
         reply_markup=build_kb(user_id, page, total_pages)
     )
 
-    # 2. kirim media
-    media_group = [
-        InputMediaPhoto(media=item) for item in chunk
-    ]
-
-    await message.bot.send_media_group(
-        chat_id=message.chat.id,
-        media=media_group
-    )
+    # kirim media hanya di first load
+    await send_media(message.chat.id, chunk)
 # =========================
 # BUILD KEYBOARD
 # =========================
