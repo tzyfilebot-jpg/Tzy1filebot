@@ -320,48 +320,71 @@ async def handle_media(message: Message):
     state = user_states.get(user_id)
     s = upload_sessions.get(user_id)
 
+    # ❌ bukan upload mode
     if not state or state.get("mode") != "upload":
         return
 
+    # ❌ session invalid
     if not s or not s.get("msg_id"):
         return
 
+    # =========================
+    # GET FILE DATA
+    # =========================
     if message.photo:
-        file_id = message.photo[-1].file_id
+        file_obj = message.photo[-1]
         file_type = "photo"
-        size = message.photo[-1].file_size or 0
         s["photo"] = s.get("photo", 0) + 1
 
     elif message.video:
-        file_id = message.video.file_id
+        file_obj = message.video
         file_type = "video"
-        size = message.video.file_size or 0
         s["video"] = s.get("video", 0) + 1
 
-    else:
-        file_id = message.document.file_id
+    elif message.document:
+        file_obj = message.document
         file_type = "document"
-        size = message.document.file_size or 0
         s["document"] = s.get("document", 0) + 1
 
+    else:
+        return
+
+    file_id = file_obj.file_id
+    size = getattr(file_obj, "file_size", 0) or 0
+
+    # =========================
+    # SAVE TEMP SESSION
+    # =========================
     s["items"].append({
         "file_id": file_id,
         "type": file_type,
         "size": size
     })
 
+    # =========================
+    # DELETE USER MESSAGE (ANTI SPAM CLEAN)
+    # =========================
     try:
         await message.delete()
     except:
         pass
 
+    # =========================
+    # THROTTLE EDIT (ANTI FLOOD UI)
+    # =========================
     now = time.time()
     if now - last_edit_time.get(user_id, 0) < 0.9:
         return
     last_edit_time[user_id] = now
 
+    # =========================
+    # STATS
+    # =========================
     total = len(s["items"])
-    size_mb = round(sum(x["size"] for x in s["items"]) / (1024 * 1024), 2)
+    size_mb = round(
+        sum(x["size"] for x in s["items"]) / (1024 * 1024),
+        2
+    )
 
     text = (
         "📤 UPLOADING...\n\n"
@@ -372,6 +395,9 @@ async def handle_media(message: Message):
         f"💾 Size      : {size_mb} MB\n"
     )
 
+    # =========================
+    # UPDATE MESSAGE
+    # =========================
     try:
         await message.bot.edit_message_text(
             chat_id=user_id,
@@ -406,22 +432,28 @@ async def done(call: CallbackQuery):
     user_id = call.from_user.id
     s = upload_sessions.get(user_id)
 
-    if not s or not s["items"]:
+    if not s or not s.get("items"):
         return await call.answer(
             "😏 kosong? ya jelas gak ada yang diproses",
             show_alert=True
         )
 
     code = generate_code(
-        s["video"],
-        s["photo"],
-        s["document"]
+        s.get("video", 0),
+        s.get("photo", 0),
+        s.get("document", 0)
     )
 
-    total_size = sum(x["size"] for x in s["items"])
+    total_items = len(s["items"])
+    total_size = sum(x.get("size", 0) for x in s["items"])
+
+    saved_items = []
 
     async with db_pool.acquire() as conn:
 
+        # =========================
+        # SAVE CODE META
+        # =========================
         await conn.execute(
             """
             INSERT INTO codes(code, owner_id, total_media, total_size)
@@ -429,31 +461,71 @@ async def done(call: CallbackQuery):
             """,
             code,
             user_id,
-            len(s["items"]),
+            total_items,
             total_size
         )
 
+        # =========================
+        # UPLOAD TO CHANNEL (HYBRID STORAGE)
+        # =========================
+        for m in s["items"]:
+
+            file_type = m.get("type")
+            file_id = m.get("file_id")
+
+            if file_type == "photo":
+                msg = await call.bot.send_photo(
+                    chat_id=CHANNEL_DB,
+                    photo=file_id
+                )
+                new_file_id = msg.photo[-1].file_id
+
+            elif file_type == "video":
+                msg = await call.bot.send_video(
+                    chat_id=CHANNEL_DB,
+                    video=file_id
+                )
+                new_file_id = msg.video.file_id
+
+            else:
+                msg = await call.bot.send_document(
+                    chat_id=CHANNEL_DB,
+                    document=file_id
+                )
+                new_file_id = msg.document.file_id
+
+            saved_items.append(
+                (code, new_file_id, file_type, m.get("size", 0))
+            )
+
+        # =========================
+        # SAVE MEDIA INDEX
+        # =========================
         await conn.executemany(
             """
             INSERT INTO medias(code, file_id, file_type, file_size)
             VALUES($1,$2,$3,$4)
             """,
-            [
-                (code, m["file_id"], m["type"], m["size"])
-                for m in s["items"]
-            ]
+            saved_items
         )
 
+    # =========================
+    # CLEANUP SESSION
+    # =========================
     upload_sessions.pop(user_id, None)
     user_states.pop(user_id, None)
     last_edit_time.pop(user_id, None)
 
+    # =========================
+    # RESPONSE MESSAGE
+    # =========================
     await call.message.edit_text(
         "💀 UPLOAD COMPLETE\n\n"
         f"😏 CODE: <code>{code}</code>\n\n"
-        "📌 Simpan CODE itu baik-baik\n"
-        "Kalau hilang...\n"
-        "itu bukan salah bot ya 😌",
+        f"📦 Total File : {total_items}\n"
+        f"💾 Size      : {round(total_size / (1024 * 1024), 2)} MB\n\n"
+        "📦 File sudah tersimpan Di Hati😍\n"
+        "🤖 Bot: tzyfilerobot",
         parse_mode="HTML"
     )
 # =========================
