@@ -100,7 +100,10 @@ async def init_db():
 # CACHE
 # =========================
 
-
+cooldown = {
+    "global": {},   # user_id -> last click
+    "page": {},     # (user_id, page) -> last open
+}
 page_history = {}  # user_id -> {page: last_open_time}
 page_cooldown = {}  # user_id -> last_switch_time
 user_click_lock = {}
@@ -664,34 +667,44 @@ async def send_page(message: Message, user_id: int):
     now = time.time()
 
     # =========================
-    # GLOBAL CLICK COOLDOWN (5 detik)
+    # 🔥 GLOBAL COOLDOWN (soft lock)
     # =========================
-    last_global = user_click_lock.get(user_id, 0)
+    last_global = cooldown["global"].get(user_id, 0)
+    global_block = now - last_global < 5
 
-    if now - last_global < 5:
-        warn = await message.answer("⏳ Santai dulu 5 detik.")
+    # =========================
+    # 🔥 PAGE COOLDOWN (soft lock)
+    # =========================
+    key = (user_id, page)
+    last_page = cooldown["page"].get(key, 0)
+    page_block = last_page and (now - last_page < 86400)
+
+    # =========================
+    # 💀 SOFT LOCK FEEDBACK (TIDAK RETURN DEAD)
+    # =========================
+    if global_block:
+        warn = await message.answer("⏳ Santai dulu 5 detik (global lock)")
         import asyncio
         asyncio.create_task(auto_delete(warn, 3))
         return
 
-    user_click_lock[user_id] = now
-
-    # =========================
-    # PAGE 24 JAM COOLDOWN
-    # =========================
-    key = (user_id, page)
-    last_page_open = page_cooldown.get(key, 0)
-
-    if last_page_open and now - last_page_open < 86400:
-        warn = await message.answer("⛔ Page ini sudah kamu buka. Tunggu 24 jam.")
+    if page_block:
+        remain = int(86400 - (now - last_page))
+        warn = await message.answer(
+            f"⛔ Page ini masih lock\n⏳ Sisa: {remain//3600} jam"
+        )
         import asyncio
         asyncio.create_task(auto_delete(warn, 5))
         return
 
-    page_cooldown[key] = now
+    # =========================
+    # UPDATE COOLDOWN STATE
+    # =========================
+    cooldown["global"][user_id] = now
+    cooldown["page"][key] = now
 
     # =========================
-    # MARK HISTORY (UNTUK ❤️🤍💙)
+    # HISTORY (❤️🤍💙 SYSTEM)
     # =========================
     page_history.setdefault(user_id, set()).add(page)
 
@@ -727,13 +740,10 @@ async def send_page(message: Message, user_id: int):
     media_group = []
 
     for media in chunk:
-
         if media["file_type"] == "photo":
             media_group.append(InputMediaPhoto(media=media["file_id"]))
-
         elif media["file_type"] == "video":
             media_group.append(InputMediaVideo(media=media["file_id"]))
-
         else:
             media_group.append(InputMediaDocument(media=media["file_id"]))
 
