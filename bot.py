@@ -1020,7 +1020,7 @@ async def account_cmd(message: Message):
             SELECT code, total_media, total_size
             FROM codes
             WHERE owner_id = $1
-            ORDER BY id DESC
+            ORDER BY code DESC
             LIMIT 10
             """,
             user.id
