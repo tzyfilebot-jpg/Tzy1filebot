@@ -612,8 +612,6 @@ async def load_media(code: str):
         }
         for r in rows
     ]
-
-
 # =========================
 # SEND MEDIA GROUP (SAFE)
 # =========================
@@ -627,42 +625,26 @@ async def send_media(bot, chat_id: int, chunk: list):
 
     media_group = []
 
-    for m in chunk[:10]:  # Telegram limit aman
-        try:
-            file_type = (m.get("file_type") or "").lower().strip()
-            file_id = m.get("file_id")
+    for m in chunk[:5]:  # 👈 FIX: 1 bubble = 5 media
+        file_type = (m.get("file_type") or "").lower().strip()
+        file_id = m.get("file_id")
 
-            if not file_id:
-                continue
-
-            if file_type == "photo":
-                media_group.append(InputMediaPhoto(media=file_id))
-
-            elif file_type == "video":
-                media_group.append(InputMediaVideo(media=file_id))
-
-            else:
-                media_group.append(InputMediaDocument(media=file_id))
-
-        except Exception as e:
-            print("SKIP MEDIA ITEM:", e)
+        if not file_id:
             continue
 
-    # kalau cuma 1 item, jangan pakai media_group (biar stabil)
-    if len(media_group) == 1:
-        try:
-            await bot.send_document(chat_id, media_group[0].media)
-        except Exception as e:
-            print("SINGLE MEDIA ERROR:", e)
-        return
+        if file_type == "photo":
+            media_group.append(InputMediaPhoto(media=file_id))
+
+        elif file_type == "video":
+            media_group.append(InputMediaVideo(media=file_id))
+
+        else:
+            media_group.append(InputMediaDocument(media=file_id))
 
     if not media_group:
         return
 
-    try:
-        await bot.send_media_group(chat_id=chat_id, media=media_group)
-    except Exception as e:
-        print("SEND MEDIA GROUP ERROR:", e)
+    await bot.send_media_group(chat_id=chat_id, media=media_group)
 # =========================
 # GETFILE HANDLER (FIX)
 # =========================
@@ -679,22 +661,10 @@ async def receive_code(message: Message):
     if not state or state.get("mode") != "getfile":
         return
 
-    if not text:
-        return
+    code = extract_code(text)
 
-    # =========================
-    # FLEXIBLE CODE PARSER
-    # =========================
-    match = re.search(
-        r"(?:CODE\s*[:=]?\s*)?([a-zA-Z0-9_]{4,})",
-        text,
-        re.IGNORECASE
-    )
-
-    if not match:
+    if not code:
         return await message.answer("❌ CODE tidak valid")
-
-    code = match.group(1).strip()
 
     # =========================
     # LOAD DATA
@@ -729,18 +699,30 @@ def build_kb(user_id, page, total_pages):
 
     buttons = []
 
-    # NAV
+    # =========================
+    # NAVIGATION (chunk page)
+    # =========================
     buttons.append([
         InlineKeyboardButton(text="⬅ Prev", callback_data="prev"),
         InlineKeyboardButton(text="➡ Next", callback_data="next"),
     ])
 
-    # PAGE ROW (max 5 per row)
+    # =========================
+    # PAGE INDICATOR (chunk system)
+    # =========================
     page_row = []
 
-    for i in range(total_pages):
+    start = max(0, page - 2)
+    end = min(total_pages, page + 3)
 
-        emoji = "✅" if i == page else ("☑️" if i in history else "❎")
+    for i in range(start, end):
+
+        if i == page:
+            emoji = "🟢"
+        elif i in history:
+            emoji = "🟡"
+        else:
+            emoji = "⚪"
 
         page_row.append(
             InlineKeyboardButton(
@@ -749,14 +731,11 @@ def build_kb(user_id, page, total_pages):
             )
         )
 
-        if len(page_row) == 5:
-            buttons.append(page_row)
-            page_row = []
+    buttons.append(page_row)
 
-    if page_row:
-        buttons.append(page_row)
-
-    # FOOTER
+    # =========================
+    # FOOTER BUTTONS
+    # =========================
     buttons.append([
         InlineKeyboardButton(
             text="📢 JOIN CHANNEL",
@@ -769,8 +748,6 @@ def build_kb(user_id, page, total_pages):
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
 # ==================
 # RENDER FIRST
 # ==================
@@ -795,6 +772,9 @@ async def render_first_page(message, user_id: int):
 
     total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
+    # =========================
+    # TEXT HEADER
+    # =========================
     text = (
         f"📦 CODE: {state['code']}\n"
         f"📄 Page: {page+1}/{total_pages}\n"
@@ -805,12 +785,15 @@ async def render_first_page(message, user_id: int):
     kb = build_kb(user_id, page, total_pages)
 
     # =========================
-    # SEND TEXT + BUTTON
+    # SEND HEADER MESSAGE (WITH KB)
     # =========================
-    sent_msg = await message.answer(text, reply_markup=kb)
+    msg = await message.answer(text, reply_markup=kb)
+
+    # simpan message id biar nanti bisa edit (WAJIB kalau mau upgrade lanjut)
+    state["msg_id"] = msg.message_id
 
     # =========================
-    # SEND MEDIA (BATCH 1 PAGE)
+    # SEND MEDIA (PAGE CHUNK)
     # =========================
     await send_media(message.bot, message.chat.id, chunk)
 
@@ -834,9 +817,6 @@ async def render_page(call, user_id: int):
 
     total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
-    # 🔥 AMBIL 1 ITEM PER PAGE (biar cocok edit_media)
-    item = chunk[0]
-
     caption = (
         f"📦 CODE: {state['code']}\n"
         f"📄 Page: {page+1}/{total_pages}\n"
@@ -845,19 +825,19 @@ async def render_page(call, user_id: int):
 
     kb = build_kb(user_id, page, total_pages)
 
-    file_type = item["file_type"]
-    file_id = item["file_id"]
+    # =========================
+    # EDIT ONLY TEXT + KB
+    # =========================
+    try:
+        await call.message.edit_text(caption, reply_markup=kb)
+    except:
+        pass
 
-    if file_type == "photo":
-        media = InputMediaPhoto(media=file_id, caption=caption)
+    # =========================
+    # SEND MEDIA PAGE (5 ITEMS)
+    # =========================
+    await send_media(call.bot, call.message.chat.id, chunk)
 
-    elif file_type == "video":
-        media = InputMediaVideo(media=file_id, caption=caption)
-
-    else:
-        media = InputMediaDocument(media=file_id, caption=caption)
-
-    await call.message.edit_media(media=media, reply_markup=kb)
     await call.answer()
 # =========================
 # CALLBACK NEXT
@@ -874,16 +854,21 @@ async def next_page(call):
     data = state["data"]
     page_size = 5
 
-    max_page = max(0, (len(data) - 1) // page_size)
+    # =========================
+    # TOTAL PAGE FIXED
+    # =========================
+    total_pages = max(1, (len(data) + page_size - 1) // page_size)
 
-    # 🔥 SAFETY CHECK
-    if state["page"] >= max_page:
+    # =========================
+    # CHECK LAST PAGE
+    # =========================
+    if state["page"] >= total_pages - 1:
         return await call.answer("Last page")
 
     state["page"] += 1
 
-    # 🔥 safety clamp (anti bug)
-    state["page"] = min(state["page"], max_page)
+    # safety clamp
+    state["page"] = min(state["page"], total_pages - 1)
 
     await render_page(call, user_id)
     
@@ -900,19 +885,19 @@ async def prev_page(call):
     if not state:
         return await call.answer("Session expired")
 
-    data = state["data"]
-    page_size = 5
+    if "page" not in state:
+        state["page"] = 0
 
-    max_page = max(0, (len(data) - 1) // page_size)
-
-    # 🔥 sudah di page pertama
+    # =========================
+    # FIRST PAGE CHECK
+    # =========================
     if state["page"] <= 0:
         state["page"] = 0
         return await call.answer("First page")
 
     state["page"] -= 1
 
-    # 🔥 safety clamp
+    # safety clamp (optional tapi aman)
     state["page"] = max(0, state["page"])
 
     await render_page(call, user_id)
@@ -932,19 +917,27 @@ async def goto_page(call):
     if not data:
         return await call.answer("No data")
 
-    # 🔥 SAFE PARSE
+    # =========================
+    # SAFE PARSE PAGE
+    # =========================
     try:
-        page = int(call.data.split(":")[1])
-    except:
+        _, page_str = call.data.split(":")
+        page = int(page_str)
+    except (ValueError, IndexError):
         return await call.answer("Invalid page")
 
     page_size = 5
-    max_page = max(0, (len(data) - 1) // page_size)
+    max_page = (len(data) - 1) // page_size
 
-    # 🔥 SAFE LIMIT
+    # =========================
+    # VALIDATION
+    # =========================
     if page < 0 or page > max_page:
         return await call.answer("Invalid page")
 
+    # =========================
+    # SET PAGE
+    # =========================
     state["page"] = page
 
     await render_page(call, user_id)
