@@ -676,6 +676,46 @@ async def receive_code(message: Message):
 # =========================
 # RENDER FIRST PAGE
 # =========================
+def build_kb(user_id, page, total_pages):
+
+    history = page_history.get(user_id, set())
+
+    nav_row = [
+        InlineKeyboardButton(text="⬅ Prev", callback_data="prev")
+    ]
+
+    for i in range(total_pages):
+        if i == page:
+            emoji = "✅"
+        elif i in history:
+            emoji = "☑️"
+        else:
+            emoji = "❎"
+
+        nav_row.append(
+            InlineKeyboardButton(
+                text=f"{i+1}{emoji}",
+                callback_data=f"page:{i}"
+            )
+        )
+
+    nav_row.append(
+        InlineKeyboardButton(text="Next ➡", callback_data="next")
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        nav_row,
+        [
+            InlineKeyboardButton(
+                text="📢 JOIN CHANNEL",
+                url="https://t.me/+slzhVF3Lev0zZTRh"
+            ),
+            InlineKeyboardButton(
+                text="💬 GROUP CHAT",
+                url="https://t.me/gcbotkx"
+            )
+        ]
+    ])
 
 async def render_first_page(message: Message, user_id: int):
 
