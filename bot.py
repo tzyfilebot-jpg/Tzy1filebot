@@ -1,11 +1,10 @@
 import os
 import asyncio
 import secrets
-import time
 import asyncpg
+import time
 
 from dotenv import load_dotenv
-
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message,
@@ -29,10 +28,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-CHANNEL_DB = os.getenv("CHANNEL_DB")
 FORCE_CHANNEL = os.getenv("FORCE_CHANNEL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL")
-VIP_LINK = os.getenv("VIP_LINK")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").replace("@", "")
 
 ADMINS = {int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()}
 
@@ -47,28 +45,11 @@ router = Router()
 db_pool = None
 
 MAX_UPLOAD = 10
-
 upload_sessions = {}
 user_mode = {}
-last_edit = {}
 
 # =========================
-# SAVAGE TEXTS
-# =========================
-
-SAVAGE = {
-    "done_success": [
-        "😏 Udah selesai? yaudah gue simpen. jangan hilangin code terus nangis ya.",
-        "💀 File aman. yang gak aman itu kamu kalau lupa code sendiri.",
-        "🔥 Beres. tapi jangan balik lagi nanya hal yang sama ya.",
-    ],
-    "limit": "🚫 Limit 10 file. ini bukan storage cloud unlimited gratisan.",
-    "empty": "😏 Kosong tapi pencet done? kamu bercanda atau gimana?",
-    "invalid": "💀 Code gak valid. mungkin kamu yang salah, bukan sistem."
-}
-
-# =========================
-# DB INIT FIX (ANTI PGBOUNCER ERROR)
+# DB INIT
 # =========================
 
 async def init_db():
@@ -113,13 +94,6 @@ async def init_db():
 def gen_code():
     return "CODE_" + secrets.token_hex(4)
 
-async def check_join(bot, uid):
-    try:
-        m = await bot.get_chat_member(FORCE_CHANNEL, uid)
-        return m.status in ("member", "administrator", "creator")
-    except:
-        return False
-
 # =========================
 # KEYBOARD
 # =========================
@@ -142,54 +116,12 @@ def upload_kb():
     ])
 
 # =========================
-# SAVE USER
-# =========================
-
-async def save_user(uid, username, fullname):
-    async with db_pool.acquire() as c:
-        await c.execute("""
-        INSERT INTO users VALUES($1,$2,$3)
-        ON CONFLICT(user_id) DO UPDATE
-        SET username=$2, fullname=$3
-        """, uid, username, fullname)
-
-# =========================
 # START
 # =========================
 
 @router.message(F.text == "/start")
 async def start(m: Message):
-    u = m.from_user
-
-    await save_user(u.id, u.username or "none", u.full_name)
-
-    if FORCE_CHANNEL and not await check_join(m.bot, u.id):
-        return await m.answer(
-            "⚠️ LOH BELUM JOIN CHANNEL.\n"
-            "Join dulu baru boleh pake bot.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="JOIN CHANNEL", url=f"https://t.me/{FORCE_CHANNEL.replace('@','')}")],
-                [InlineKeyboardButton(text="CHECK", callback_data="check")]
-            ])
-        )
-
-    await m.answer(
-        "🔥 MENU ACTIVE\n"
-        "💀 Jangan salah pake bot ya, nanti kamu sendiri yang bingung.",
-        reply_markup=menu()
-    )
-
-# =========================
-# CHECK JOIN
-# =========================
-
-@router.callback_query(F.data == "check")
-async def check(c: CallbackQuery):
-    if await check_join(c.bot, c.from_user.id):
-        await c.message.edit_text("✅ VERIFIED")
-        await c.message.answer("🔥 MENU READY", reply_markup=menu())
-    else:
-        await c.answer("❌ BELUM JOIN", show_alert=True)
+    await m.answer("🔥 MENU READY", reply_markup=menu())
 
 # =========================
 # UPLOAD MODE
@@ -209,8 +141,7 @@ async def up(m: Message):
     user_mode[uid] = "upload"
 
     msg = await m.answer(
-        "📤 UPLOAD MODE AKTIF\n"
-        "💀 Maks 10 file. jangan lebay upload terus.",
+        "📤 UPLOAD MODE",
         reply_markup=upload_kb()
     )
 
@@ -232,7 +163,7 @@ async def media(m: Message):
         return
 
     if len(s["items"]) >= MAX_UPLOAD:
-        return await m.answer(SAVAGE["limit"])
+        return await m.answer("LIMIT 10 FILE")
 
     if m.photo:
         f, t = m.photo[-1], "photo"
@@ -247,18 +178,6 @@ async def media(m: Message):
         "size": f.file_size or 0
     })
 
-    s["size"] += f.file_size or 0
-
-    try:
-        await m.bot.edit_message_text(
-            chat_id=s["chat"],
-            message_id=s["msg_id"],
-            text=f"📦 UPLOAD: {len(s['items'])}/{MAX_UPLOAD}",
-            reply_markup=upload_kb()
-        )
-    except TelegramBadRequest:
-        pass
-
 # =========================
 # DONE
 # =========================
@@ -269,7 +188,7 @@ async def done(c: CallbackQuery):
     s = upload_sessions.get(uid)
 
     if not s or not s["items"]:
-        return await c.answer(SAVAGE["empty"], show_alert=True)
+        return await c.answer("EMPTY", show_alert=True)
 
     code = gen_code()
 
@@ -281,21 +200,14 @@ async def done(c: CallbackQuery):
 
         for i in s["items"]:
             await conn.execute(
-                "INSERT INTO medias(code,file_id,file_type,file_size) VALUES($1,$2,$3,$4)",
+                "INSERT INTO medias VALUES(DEFAULT,$1,$2,$3,$4)",
                 code, i["file_id"], i["type"], i["size"]
             )
 
     upload_sessions.pop(uid, None)
     user_mode.pop(uid, None)
 
-    await c.message.edit_text(
-        f"🔥 UPLOAD DONE\n\n"
-        f"CODE: <code>{code}</code>\n"
-        f"TOTAL: {len(s['items'])}\n"
-        f"SIZE: {round(s['size']/1024/1024,2)} MB\n\n"
-        f"{secrets.choice(SAVAGE['done_success'])}",
-        parse_mode="HTML"
-    )
+    await c.message.edit_text(f"CODE: {code}")
 
 # =========================
 # CANCEL
@@ -305,18 +217,7 @@ async def done(c: CallbackQuery):
 async def cancel(c: CallbackQuery):
     upload_sessions.pop(c.from_user.id, None)
     user_mode.pop(c.from_user.id, None)
-    await c.message.edit_text("❌ CANCELLED. yaudah santai aja.")
-
-from aiogram.types import (
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputMediaDocument,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
-)
-
-BOT_USERNAME = os.getenv("BOT_USERNAME", "").replace("@", "")
-UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "").replace("@", "")
+    await c.message.edit_text("CANCELLED")
 
 # =========================
 # GET MODE
@@ -325,15 +226,19 @@ UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "").replace("@", "")
 @router.message(F.text == "📥 Get File")
 async def get_mode(m: Message):
     user_mode[m.from_user.id] = "get"
-    await m.answer("📥 KIRIM CODE SEKARANG")
+    await m.answer("KIRIM CODE")
 
 # =========================
-# GET FILE (FIXED FULL SAFE)
+# GET FILE (FIX FINAL CLEAN)
 # =========================
 
-@router.message(lambda m: user_mode.get(m.from_user.id) == "get")
+@router.message()
 async def get_file(m: Message):
     uid = m.from_user.id
+
+    if user_mode.get(uid) != "get":
+        return
+
     code = (m.text or "").strip()
 
     async with db_pool.acquire() as c:
@@ -343,17 +248,17 @@ async def get_file(m: Message):
         )
 
     if not rows:
-        return await m.answer("❌ CODE TIDAK VALID")
+        return await m.answer("INVALID CODE")
 
     media = []
 
     for r in rows[:10]:
         if r["file_type"] == "photo":
-            media.append(InputMediaPhoto(media=r["file_id"]))
+            media.append(InputMediaPhoto(r["file_id"]))
         elif r["file_type"] == "video":
-            media.append(InputMediaVideo(media=r["file_id"]))
+            media.append(InputMediaVideo(r["file_id"]))
         else:
-            media.append(InputMediaDocument(media=r["file_id"]))
+            media.append(InputMediaDocument(r["file_id"]))
 
     await m.bot.send_media_group(chat_id=m.chat.id, media=media)
 
@@ -361,23 +266,19 @@ async def get_file(m: Message):
     update_link = f"https://t.me/{UPDATE_CHANNEL}"
 
     caption = (
-        f"🔓 <b>CODE:</b> <code>{code}</code>\n\n"
+        f"🔓 CODE: {code}\n\n"
         f"Media sudah dibuka oleh <a href='{bot_link}'>BOT</a>\n\n"
-        f"📢 Join update channel: <a href='{update_link}'>UPDATE</a>"
+        f"UPDATE: <a href='{update_link}'>CHANNEL</a>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔔 Notifikasi Bot", url=bot_link),
-            InlineKeyboardButton(text="💬 New Group Chat", url=update_link)
+            InlineKeyboardButton(text="BOT", url=bot_link),
+            InlineKeyboardButton(text="UPDATE", url=update_link)
         ]
     ])
 
-    await m.answer(
-        caption,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+    await m.answer(caption, parse_mode="HTML", reply_markup=kb)
 
     user_mode.pop(uid, None)
 
@@ -387,11 +288,7 @@ async def get_file(m: Message):
 
 @router.message(F.text == "👤 Account")
 async def account(m: Message):
-    async with db_pool.acquire() as c:
-        codes = await c.fetch("SELECT code FROM codes WHERE owner=$1", m.from_user.id)
-
-    txt = "\n".join([x["code"] for x in codes]) or "EMPTY"
-    await m.answer(f"👤 ACCOUNT\n\n{txt}")
+    await m.answer("ACCOUNT OK")
 
 # =========================
 # HELP
@@ -399,11 +296,7 @@ async def account(m: Message):
 
 @router.message(F.text == "❓ Help")
 async def help(m: Message):
-    await m.answer(
-        "📤 UP → upload → done\n"
-        "📥 GET → kirim code\n"
-        "💀 jangan abuse bot"
-    )
+    await m.answer("UP / GET / DONE")
 
 # =========================
 # MAIN
