@@ -8,6 +8,7 @@ import secrets
 import string
 import asyncpg
 import time
+import asyncio
 
 from dotenv import load_dotenv
 
@@ -24,7 +25,7 @@ from aiogram.types import (
     InputMediaDocument
 )
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 # =========================
 # CONFIG
@@ -36,6 +37,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 CHANNEL_DB = os.getenv("CHANNEL_DB")
+
 ADMINS = set(
     int(x)
     for x in os.getenv("ADMINS", "").split(",")
@@ -48,7 +50,7 @@ NOTIFICATION_CHANNEL = os.getenv("NOTIFICATION_CHANNEL")
 VIP_LINK = os.getenv("VIP_LINK")
 
 # =========================
-# DB POOL
+# DB POOL (OPTIMIZED)
 # =========================
 
 db_pool: asyncpg.Pool | None = None
@@ -58,18 +60,14 @@ async def init_db():
 
     db_pool = await asyncpg.create_pool(
         DATABASE_URL,
-
         min_size=1,
         max_size=10,
-
-        statement_cache_size=0,
-        command_timeout=60
+        statement_cache_size=100,   # FIX
+        command_timeout=15          # FIX
     )
 
     async with db_pool.acquire() as conn:
-
         await conn.execute("""
-
         CREATE TABLE IF NOT EXISTS users(
             user_id BIGINT PRIMARY KEY,
             username TEXT,
@@ -92,33 +90,120 @@ async def init_db():
             file_size BIGINT
         );
         """)
+
 # =========================
-# CACHE
+# CACHE / MEMORY
 # =========================
 
 cooldown = {
-    "global": {},   # user_id -> last click
-    "page": {},     # (user_id, page) -> last open
+    "global": {},
+    "page": {},
 }
-page_history = {}  # user_id -> {page: last_open_time}
-page_cooldown = {}  # user_id -> last_switch_time
+
+page_history = {}
+page_cooldown = {}
 user_click_lock = {}
 upload_sessions = {}
 user_states = {}
 last_edit_time = {}
 
 # =========================
+# ANTI BANNED SYSTEM 🔥
+# =========================
+
+GLOBAL_DELAY = 0.05
+last_global_send = 0
+
+USER_DELAY = 2
+user_last_action = {}
+
+def user_limit(user_id):
+    now = time.time()
+    last = user_last_action.get(user_id, 0)
+
+    if now - last < USER_DELAY:
+        return False
+
+    user_last_action[user_id] = now
+    return True
+
+async def global_throttle():
+    global last_global_send
+
+    now = time.time()
+    diff = now - last_global_send
+
+    if diff < GLOBAL_DELAY:
+        await asyncio.sleep(GLOBAL_DELAY - diff)
+
+    last_global_send = time.time()
+
+async def safe_send(func, *args, **kwargs):
+    for _ in range(5):
+        try:
+            await global_throttle()
+            return await func(*args, **kwargs)
+
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+
+        except TelegramBadRequest as e:
+            print("BAD REQUEST:", e)
+            return
+
+        except Exception as e:
+            print("ERROR:", e)
+            await asyncio.sleep(1)
+
+# =========================
+# MEDIA SENDER (SAFE)
+# =========================
+
+async def send_media(bot, chat_id: int, chunk: list):
+
+    if not chunk:
+        return
+
+    media_group = []
+
+    for m in chunk[:5]:
+        file_type = (m.get("file_type") or "").lower()
+        file_id = m.get("file_id")
+
+        if not file_id:
+            continue
+
+        if file_type == "photo":
+            media_group.append(InputMediaPhoto(media=file_id))
+
+        elif file_type == "video":
+            media_group.append(InputMediaVideo(media=file_id))
+
+        else:
+            media_group.append(InputMediaDocument(media=file_id))
+
+    if not media_group:
+        return
+
+    await safe_send(
+        bot.send_media_group,
+        chat_id=chat_id,
+        media=media_group
+    )
+
+    await asyncio.sleep(1)
+
+# =========================
 # ROUTER
 # =========================
 
 router = Router()
-
+    
 # =========================
 # KEYBOARD
 # =========================
 
 def get_keyboard():
-
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -127,60 +212,51 @@ def get_keyboard():
             ]
         ],
         resize_keyboard=True,
-        input_field_placeholder="Upload atau ambil file... jangan bingung 😏"
+        input_field_placeholder="Upload atau ambil file... 😏"
     )
+
 # =========================
-# FORCE SUB
+# FORCE SUB (SAFE + CLEAN)
 # =========================
 
-async def check_force_sub(
-    bot: Bot,
-    user_id: int,
-    channel: str
-):
-
+async def check_force_sub(bot: Bot, user_id: int, channel: str):
     try:
-
-        ch = channel.replace("@", "")
+        ch = channel.replace("@", "").strip()
 
         member = await bot.get_chat_member(
-            f"@{ch}",
-            user_id
+            chat_id=f"@{ch}",
+            user_id=user_id
         )
 
-        return member.status in [
-            "member",
-            "administrator",
-            "creator"
-        ]
+        return member.status in ("member", "administrator", "creator")
 
-    except Exception:
-
+    except Exception as e:
+        print("FORCE SUB ERROR:", e)
         return False
 
 
 def force_kb(channel):
-
-    ch = channel.replace("@", "")
+    ch = channel.replace("@", "").strip()
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📢 Join",
+                    text="📢 Join Channel",
                     url=f"https://t.me/{ch}"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🔄 Check",
+                    text="✅ Sudah Join",
                     callback_data="check_sub"
                 )
             ]
         ]
     )
+
 # =========================
-# START
+# START (ANTI BANNED VERSION)
 # =========================
 
 @router.message(F.text == "/start")
@@ -188,30 +264,45 @@ async def start(message: Message, bot: Bot):
 
     user = message.from_user
 
-    # FORCE SUB FIRST (lebih efisien)
+    # 🔥 ANTI SPAM USER
+    if not user_limit(user.id):
+        return await safe_send(
+            message.answer,
+            "⏳ Jangan spam ya 😏"
+        )
+
+    # =========================
+    # FORCE SUB CHECK
+    # =========================
     if FORCE_CHANNEL:
         ok = await check_force_sub(bot, user.id, FORCE_CHANNEL)
 
         if not ok:
-            return await message.answer(
-                "⚠️ ACCESS BLOCKED\n\n"
+            return await safe_send(
+                message.answer,
+                "⚠️ AKSES DITOLAK\n\n"
                 "😏 Kamu belum join channel.\n"
-                "Join dulu, baru bisa pakai bot.",
+                "Join dulu baru bisa lanjut.",
                 reply_markup=force_kb(FORCE_CHANNEL)
             )
 
-    # SAVE USER (safe)
+    # =========================
+    # SAVE USER (SAFE)
+    # =========================
     try:
         await add_user(
             user.id,
             user.username or "none",
             user.full_name
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print("ADD USER ERROR:", e)
 
+    # =========================
     # RESPONSE
-    await message.answer(
+    # =========================
+    await safe_send(
+        message.answer,
         "🔥 BOT ONLINE\n\n"
         "😏 Selamat datang di FILE CODE SYSTEM.\n\n"
         "━━━━━━━━━━━━━━\n"
@@ -222,26 +313,28 @@ async def start(message: Message, bot: Bot):
         "━━━━━━━━━━━━━━\n"
         "💀 NOTE\n"
         "━━━━━━━━━━━━━━\n"
-        "• Bot tidak peduli kamu salah input\n"
         "• CODE hilang = tanggung jawab user\n"
-        "• Jangan spam, nanti dibatasi 😌",
+        "• Jangan spam 😏",
         reply_markup=get_keyboard()
     )
+
 # =========================
-# CHECK SUB
+# CHECK SUB (ANTI SPAM + SAFE EDIT)
 # =========================
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub(call: CallbackQuery, bot: Bot):
 
+    user_id = call.from_user.id
+
+    # 🔥 ANTI SPAM
+    if not user_limit(user_id):
+        return await call.answer("⏳ Jangan spam", show_alert=True)
+
     if not FORCE_CHANNEL:
         return await call.answer("Force sub OFF", show_alert=True)
 
-    ok = await check_force_sub(
-        bot,
-        call.from_user.id,
-        FORCE_CHANNEL
-    )
+    ok = await check_force_sub(bot, user_id, FORCE_CHANNEL)
 
     if not ok:
         return await call.answer(
@@ -252,11 +345,15 @@ async def check_sub(call: CallbackQuery, bot: Bot):
     # =========================
     # SUCCESS
     # =========================
-    await call.message.edit_text("✅ VERIFIED")
+    try:
+        await call.message.edit_text("✅ VERIFIED")
+    except:
+        pass
 
-    await call.message.answer(
-        "🔥 ACCESS GRANTED\n\n"
-        "😏 Silakan lanjut pakai bot.",
+    await safe_send(
+        call.message.answer,
+        "🔥 AKSES DIBUKA\n\n"
+        "😏 Silakan gunakan bot.",
         reply_markup=get_keyboard()
     )
 
@@ -269,23 +366,22 @@ def upload_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="✅ DONE",
-                    callback_data="upload_done"
-                ),
-                InlineKeyboardButton(
-                    text="❌ CANCEL",
-                    callback_data="upload_cancel"
-                )
+                InlineKeyboardButton(text="✅ DONE", callback_data="upload_done"),
+                InlineKeyboardButton(text="❌ CANCEL", callback_data="upload_cancel")
             ]
         ]
     )
+
 
 @router.message(F.text == "📤 Up File")
 async def up_file(message: Message):
 
     user_id = message.from_user.id
 
+    if not user_limit(user_id):
+        return await safe_send(message.answer, "⏳ Jangan spam ya 😏")
+
+    # reset session
     upload_sessions.pop(user_id, None)
     user_states.pop(user_id, None)
 
@@ -299,17 +395,20 @@ async def up_file(message: Message):
         "msg_id": None
     }
 
-    msg = await message.answer(
+    msg = await safe_send(
+        message.answer,
         "📤 UPLOAD MODE AKTIF\n\n"
-        "😏 Silakan kirim file kamu.\n"
-        "Tapi jangan lupa tekan DONE ya...\n\n"
-        "💀 Bot nggak akan menunggu kamu selamanya.",
+        "😏 Kirim file kamu sekarang.\n"
+        "Tekan DONE kalau sudah.\n\n"
+        "💀 Jangan lama-lama ya...",
         reply_markup=upload_kb()
     )
 
     upload_sessions[user_id]["msg_id"] = msg.message_id
+
+
 # =========================
-# MEDIA HANDLER
+# MEDIA HANDLER (FINAL CLEAN)
 # =========================
 
 @router.message(F.photo | F.video | F.document)
@@ -320,31 +419,26 @@ async def handle_media(message: Message):
     state = user_states.get(user_id)
     s = upload_sessions.get(user_id)
 
-    # ❌ bukan upload mode
     if not state or state.get("mode") != "upload":
         return
 
-    # ❌ session invalid
     if not s or not s.get("msg_id"):
         return
 
     # =========================
-    # GET FILE DATA
+    # GET FILE
     # =========================
     if message.photo:
         file_obj = message.photo[-1]
-        file_type = "photo"
-        s["photo"] = s.get("photo", 0) + 1
+        s["photo"] += 1
 
     elif message.video:
         file_obj = message.video
-        file_type = "video"
-        s["video"] = s.get("video", 0) + 1
+        s["video"] += 1
 
     elif message.document:
         file_obj = message.document
-        file_type = "document"
-        s["document"] = s.get("document", 0) + 1
+        s["document"] += 1
 
     else:
         return
@@ -352,17 +446,13 @@ async def handle_media(message: Message):
     file_id = file_obj.file_id
     size = getattr(file_obj, "file_size", 0) or 0
 
-    # =========================
-    # SAVE TEMP SESSION
-    # =========================
     s["items"].append({
         "file_id": file_id,
-        "type": file_type,
         "size": size
     })
 
     # =========================
-    # DELETE USER MESSAGE (ANTI SPAM CLEAN)
+    # DELETE USER MESSAGE
     # =========================
     try:
         await message.delete()
@@ -370,59 +460,60 @@ async def handle_media(message: Message):
         pass
 
     # =========================
-    # THROTTLE EDIT (ANTI FLOOD UI)
+    # THROTTLE
     # =========================
     now = time.time()
-    if now - last_edit_time.get(user_id, 0) < 0.9:
+    if now - last_edit_time.get(user_id, 0) < 1:
         return
     last_edit_time[user_id] = now
 
     # =========================
-    # STATS
+    # STATS + UI (SATU KALI EDIT)
     # =========================
     total = len(s["items"])
-    size_mb = round(
-        sum(x["size"] for x in s["items"]) / (1024 * 1024),
-        2
-    )
+    size_mb = round(sum(x["size"] for x in s["items"]) / (1024 * 1024), 2)
+
+    bar_len = 10
+    filled = min(bar_len, total)
+    bar = "█" * filled + "░" * (bar_len - filled)
 
     text = (
-        "📤 UPLOADING...\n\n"
-        f"🎥 Video     : {s.get('video', 0)}\n"
-        f"🖼 Photo     : {s.get('photo', 0)}\n"
-        f"📁 Document  : {s.get('document', 0)}\n"
-        f"📦 Total     : {total}\n"
-        f"💾 Size      : {size_mb} MB\n"
+        "📤 UPLOAD MODE\n\n"
+        f"📊 Progress : [{bar}] {total} file\n\n"
+        f"🖼 Photo    : {s['photo']}\n"
+        f"🎬 Video    : {s['video']}\n"
+        f"📁 Document : {s['document']}\n"
+        f"💾 Size     : {size_mb} MB\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "Tekan DONE kalau sudah 😏"
     )
 
-    # =========================
-    # UPDATE MESSAGE
-    # =========================
     try:
-        await message.bot.edit_message_text(
-            chat_id=user_id,
+        await safe_send(
+            message.bot.edit_message_text,
+            chat_id=message.chat.id,
             message_id=s["msg_id"],
             text=text,
             reply_markup=upload_kb()
         )
-    except TelegramBadRequest:
-        pass
+    except Exception as e:
+        print("EDIT ERROR:", e)
+        
 # =========================
 # GENERATE CODE
 # =========================
 
 def generate_code(v, p, d):
-
-    import hashlib
+    import hashlib, secrets
 
     base = f"{v}{p}{d}{secrets.token_hex(4)}"
-
     rand = hashlib.sha1(base.encode()).hexdigest()[:12]
 
     return f"tzy_{v}v_{p}p_{d}d_{rand}"
 
+
 # =========================
-# DONE
+# DONE HANDLER
 # =========================
 
 @router.callback_query(F.data == "upload_done")
@@ -448,161 +539,176 @@ async def done(call: CallbackQuery):
 
     saved_items = []
 
-    async with db_pool.acquire() as conn:
+    try:
+        async with db_pool.acquire() as conn:
 
-        # =========================
-        # SAVE CODE META
-        # =========================
-        await conn.execute(
-            """
-            INSERT INTO codes(code, owner_id, total_media, total_size)
-            VALUES($1,$2,$3,$4)
-            """,
-            code,
-            user_id,
-            total_items,
-            total_size
-        )
-
-        # =========================
-        # UPLOAD TO CHANNEL (HYBRID STORAGE)
-        # =========================
-        for m in s["items"]:
-
-            file_type = m.get("type")
-            file_id = m.get("file_id")
-
-            if file_type == "photo":
-                msg = await call.bot.send_photo(
-                    chat_id=CHANNEL_DB,
-                    photo=file_id
-                )
-                new_file_id = msg.photo[-1].file_id
-
-            elif file_type == "video":
-                msg = await call.bot.send_video(
-                    chat_id=CHANNEL_DB,
-                    video=file_id
-                )
-                new_file_id = msg.video.file_id
-
-            else:
-                msg = await call.bot.send_document(
-                    chat_id=CHANNEL_DB,
-                    document=file_id
-                )
-                new_file_id = msg.document.file_id
-
-            saved_items.append(
-                (code, new_file_id, file_type, m.get("size", 0))
+            # =========================
+            # SAVE META
+            # =========================
+            await conn.execute(
+                """
+                INSERT INTO codes(code, owner_id, total_media, total_size)
+                VALUES($1,$2,$3,$4)
+                """,
+                code,
+                user_id,
+                total_items,
+                total_size
             )
 
-        # =========================
-        # SAVE MEDIA INDEX
-        # =========================
-        await conn.executemany(
-            """
-            INSERT INTO medias(code, file_id, file_type, file_size)
-            VALUES($1,$2,$3,$4)
-            """,
-            saved_items
+            # =========================
+            # UPLOAD TO CHANNEL
+            # =========================
+            for m in s["items"]:
+
+                file_id = m.get("file_id")
+                file_type = m.get("type")
+
+                if not file_id or not file_type:
+                    continue
+
+                try:
+                    if file_type == "photo":
+                        msg = await call.bot.send_photo(
+                            chat_id=CHANNEL_DB,
+                            photo=file_id
+                        )
+                        new_file_id = msg.photo[-1].file_id
+
+                    elif file_type == "video":
+                        msg = await call.bot.send_video(
+                            chat_id=CHANNEL_DB,
+                            video=file_id
+                        )
+                        new_file_id = msg.video.file_id
+
+                    elif file_type == "document":
+                        msg = await call.bot.send_document(
+                            chat_id=CHANNEL_DB,
+                            document=file_id
+                        )
+                        new_file_id = msg.document.file_id
+
+                    else:
+                        continue
+
+                    saved_items.append(
+                        (code, new_file_id, file_type, m.get("size", 0))
+                    )
+
+                except Exception as e:
+                    print("UPLOAD ERROR:", e)
+                    continue
+
+            # =========================
+            # SAVE MEDIA INDEX
+            # =========================
+            if saved_items:
+                await conn.executemany(
+                    """
+                    INSERT INTO medias(code, file_id, file_type, file_size)
+                    VALUES($1,$2,$3,$4)
+                    """,
+                    saved_items
+                )
+
+    except Exception as e:
+        print("DB ERROR:", e)
+        return await call.message.edit_text(
+            "❌ Gagal menyimpan file, coba lagi nanti"
         )
 
     # =========================
-    # CLEANUP SESSION
+    # CLEAN SESSION
     # =========================
     upload_sessions.pop(user_id, None)
     user_states.pop(user_id, None)
     last_edit_time.pop(user_id, None)
 
     # =========================
-    # RESPONSE MESSAGE
+    # FINAL RESPONSE
     # =========================
-    await call.message.edit_text(
-        "💀 UPLOAD COMPLETE\n\n"
-        f"😏 CODE: <code>{code}</code>\n\n"
-        f"📦 Total File : {total_items}\n"
-        f"💾 Size      : {round(total_size / (1024 * 1024), 2)} MB\n\n"
-        "📦 File sudah tersimpan Di Hati😍\n"
-        "🤖 Bot: tzyfilerobot",
-        parse_mode="HTML"
-    )
+    try:
+        await call.message.edit_text(
+            "💀 UPLOAD COMPLETE\n\n"
+            f"😏 CODE: <code>{code}</code>\n\n"
+            f"📦 Total File : {total_items}\n"
+            f"💾 Size      : {round(total_size / (1024 * 1024), 2)} MB\n\n"
+            "📦 File berhasil disimpan 😏\n"
+            "🤖 Bot: tzyfilerobot",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print("FINAL EDIT ERROR:", e)
+
+
 # =========================
-# CANCEL
+# CANCEL HANDLER
 # =========================
 
-@router.callback_query(
-    F.data == "upload_cancel"
-)
-async def cancel(
-    call: CallbackQuery
-):
+@router.callback_query(F.data == "upload_cancel")
+async def cancel(call: CallbackQuery):
 
     user_id = call.from_user.id
 
-    upload_sessions.pop(
-        user_id,
-        None
-    )
+    upload_sessions.pop(user_id, None)
+    user_states.pop(user_id, None)
+    last_edit_time.pop(user_id, None)
 
-    user_states.pop(
-        user_id,
-        None
-    )
-
-    await call.message.edit_text(
-        "❌ Cancelled"
-    )
+    try:
+        await call.message.edit_text("❌ Upload dibatalkan")
+    except:
+        pass
 # =========================
-# OPEN GET FILE MODE
+# GLOBAL
 # =========================
+page_history = {}
+COOLDOWN_TIME = 5
 
-@router.message(F.text == "📥 Get File")
-async def get_file_start(message: Message):
-
-    user_id = message.from_user.id
-
-    user_states[user_id] = {
-        "mode": "getfile"
-    }
-
-    await message.answer(
-        "📥 Kirim CODE untuk ambil file kamu\n\n"
-        "⚡ Cepetan Cok..."
-    )
 # =========================
 # NORMALIZER
 # =========================
-
 def normalize_type(t):
     t = (t or "").lower().strip()
-
     if t in ["photo", "image", "img"]:
         return "photo"
     if t in ["video", "vid"]:
         return "video"
-    if t in ["doc", "document", "file"]:
-        return "document"
-
     return "document"
+
+
+# =========================
+# COOLDOWN
+# =========================
+def is_cooldown(user_id):
+    now = time.time()
+    last = cooldown["global"].get(user_id, 0)
+
+    if now - last < COOLDOWN_TIME:
+        return True
+
+    cooldown["global"][user_id] = now
+    return False
 
 
 # =========================
 # LOAD MEDIA
 # =========================
-
 async def load_media(code: str):
-
     if not code:
         return []
 
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT file_id, file_type, COALESCE(file_size, 0) AS file_size
-            FROM medias
-            WHERE code=$1
-            ORDER BY id ASC
-        """, code)
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT file_id, file_type, COALESCE(file_size,0) AS file_size
+                FROM medias
+                WHERE code=$1
+                ORDER BY id ASC
+            """, code)
+    except Exception as e:
+        print("DB ERROR:", e)
+        return []
 
     return [
         {
@@ -612,380 +718,251 @@ async def load_media(code: str):
         }
         for r in rows
     ]
-# =========================
-# SEND MEDIA GROUP (SAFE)
-# =========================
 
-from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 
+# =========================
+# SEND MEDIA (ANTI BAN SAFE)
+# =========================
 async def send_media(bot, chat_id: int, chunk: list):
 
     if not chunk:
         return
 
-    media_group = []
+    media = []
 
-    for m in chunk[:5]:  # 👈 FIX: 1 bubble = 5 media
-        file_type = (m.get("file_type") or "").lower().strip()
-        file_id = m.get("file_id")
+    for m in chunk[:5]:
+        fid = m.get("file_id")
+        t = m.get("file_type")
 
-        if not file_id:
+        if not fid:
             continue
 
-        if file_type == "photo":
-            media_group.append(InputMediaPhoto(media=file_id))
-
-        elif file_type == "video":
-            media_group.append(InputMediaVideo(media=file_id))
-
+        if t == "photo":
+            media.append(InputMediaPhoto(media=fid))
+        elif t == "video":
+            media.append(InputMediaVideo(media=fid))
         else:
-            media_group.append(InputMediaDocument(media=file_id))
+            media.append(InputMediaDocument(media=fid))
 
-    if not media_group:
+    if not media:
         return
 
-    await bot.send_media_group(chat_id=chat_id, media=media_group)
-# =========================
-# GETFILE HANDLER (FIX)
-# =========================
-
-import re
-
-@router.message(F.text & ~F.text.startswith("/"))
-async def receive_code(message: Message):
-
-    user_id = message.from_user.id
-    text = (message.text or "").strip()
-
-    state = user_states.get(user_id)
-
-    if not state or state.get("mode") != "getfile":
-        return
-
-    if not text:
-        return
-
-    # =========================
-    # MULTI CODE EXTRACTION (ROBUST)
-    # =========================
-    codes = re.findall(
-        r"CODE\s*[:=]?\s*([A-Za-z0-9_]{6,})",
-        text,
-        re.IGNORECASE
-    )
-
-    # fallback: user cuma paste code
-    if not codes:
-        codes = re.findall(
-            r"\b([A-Za-z0-9_]{10,})\b",
-            text
-        )
-
-    # fallback tambahan (CN / variation)
-    if not codes:
-        codes = re.findall(
-            r"(?:代码|CODE)\s*[:=]?\s*([A-Za-z0-9_]{6,})",
-            text,
-            re.IGNORECASE
-        )
-
-    # =========================
-    # VALIDATION
-    # =========================
-    codes = list(dict.fromkeys(codes))  # remove duplicate
-
-    if not codes:
-        return await message.answer("❌ CODE tidak ditemukan")
-
-    # limit safety (anti spam)
-    codes = codes[:10]
-
-    all_data = []
-
-    # =========================
-    # LOAD ALL CODES
-    # =========================
-    for code in codes:
-        code = code.strip()
-
-        if len(code) < 6:
-            continue
-
-        try:
-            data = await load_media(code)
-            if data:
-                all_data.extend(data)
-        except Exception as e:
-            print(f"LOAD ERROR {code}:", e)
-
-    if not all_data:
-        return await message.answer("❌ Semua CODE tidak valid")
-
-    # =========================
-    # SET STATE
-    # =========================
-    user_states[user_id] = {
-        "mode": "view",
-        "code": codes[0],
-        "page": 0,
-        "data": all_data
-    }
-
-    page_history[user_id] = set()
-
-    # =========================
-    # RENDER UI
-    # =========================
     try:
-        await render_first_page(message, user_id)
+        await bot.send_media_group(chat_id, media)
+        await asyncio.sleep(0.3 + random.uniform(0.1, 0.4))
     except Exception as e:
-        print("RENDER ERROR:", e)
-        await message.answer("❌ Error saat menampilkan file")
-        
+        print("SEND ERROR:", e)
+
+
 # =========================
-# KB BUILDER (FIXED)
+# KEYBOARD
 # =========================
 def build_kb(user_id, page, total_pages):
 
     history = page_history.get(user_id, set())
+    rows = []
 
-    buttons = []
+    prev_btn = InlineKeyboardButton(
+        text="⬅ Prev" if page > 0 else "⛔ Prev",
+        callback_data="prev" if page > 0 else "noop"
+    )
 
-    # =========================
-    # NAVIGATION
-    # =========================
-    buttons.append([
-        InlineKeyboardButton(text="⬅ Prev", callback_data="prev"),
-        InlineKeyboardButton(text="➡ Next", callback_data="next"),
-    ])
+    next_btn = InlineKeyboardButton(
+        text="➡ Next" if page < total_pages - 1 else "⛔ Next",
+        callback_data="next" if page < total_pages - 1 else "noop"
+    )
 
-    # =========================
-    # PAGE WINDOW (5 tombol dinamis)
-    # =========================
-    page_row = []
+    rows.append([prev_btn, next_btn])
 
+    # page indicator
     window = 5
-
     start = max(0, page - 2)
-    end = start + window
+    end = min(total_pages, start + window)
 
-    if end > total_pages:
-        end = total_pages
-        start = max(0, end - window)
-
+    page_row = []
     for i in range(start, end):
 
         if i == page:
-            emoji = "🟢"
+            mark = "🟢"
         elif i in history:
-            emoji = "🟡"
+            mark = "🟡"
         else:
-            emoji = "⚪"
+            mark = "⚪"
 
         page_row.append(
             InlineKeyboardButton(
-                text=f"{i+1}{emoji}",
+                text=f"{i+1}{mark}",
                 callback_data=f"page:{i}"
             )
         )
 
     if page_row:
-        buttons.append(page_row)
+        rows.append(page_row)
 
-    # =========================
-    # FOOTER
-    # =========================
-    buttons.append([
-        InlineKeyboardButton(
-            text="📢 JOIN CHANNEL",
-            url="https://t.me/+slzhVF3Lev0zZTRh"
-        ),
-        InlineKeyboardButton(
-            text="💬 GROUP CHAT",
-            url="https://t.me/gcbotkx"
-        )
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-# ==================
-# RENDER FIRST
-# ==================
 
-async def render_first_page(message, user_id: int):
-
-    state = user_states.get(user_id)
-    if not state:
-        return await message.answer("Session expired")
-
-    data = state.get("data", [])
-    if not data:
-        return await message.answer("❌ Tidak ada media")
-
-    state["page"] = 0
-
-    page = 0
-    page_size = 5
-
-    start = page * page_size
-    chunk = data[start:start + page_size]
-
-    total_pages = max(1, (len(data) + page_size - 1) // page_size)
-
-    # =========================
-    # MEDIA
-    # =========================
-    await send_media(message.bot, message.chat.id, chunk)
-
-    # =========================
-    # CONTROL MESSAGE
-    # =========================
-    text = (
-        f"📦 CODE: {state['code']}\n"
-        f"📄 Page: {page+1}/{total_pages}\n"
-        f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
-    )
-
-    kb = build_kb(user_id, page, total_pages)
-
-    msg = await message.answer(text, reply_markup=kb)
-
-    state["msg_id"] = msg.message_id
-
-# =================
-# RENDER PAGE
-# ==================
-
-async def render_page(call, user_id: int):
+# =========================
+# RENDER PAGE (CORE)
+# =========================
+async def render_page(call, user_id):
 
     state = user_states.get(user_id)
     if not state:
         return await call.answer("Session expired")
 
-    data = state["data"]
-    page = state["page"]
-    page_size = 5
-
-    start = page * page_size
-    chunk = data[start:start + page_size]
-
-    total_pages = max(1, (len(data) + page_size - 1) // page_size)
-
-    # =========================
-    # MEDIA (kalau kamu pakai send_media, ini tetap OK)
-    # =========================
-    await send_media(call.bot, call.message.chat.id, chunk)
-
-    # =========================
-    # CONTROL TEXT
-    # =========================
-    text = (
-        f"📦 CODE: {state['code']}\n"
-        f"📄 Page: {page+1}/{total_pages}\n"
-        f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
-    )
-
-    kb = build_kb(user_id, page, total_pages)
-
-    # 🔥 INI FIX UTAMA
-    await call.message.edit_text(text, reply_markup=kb)
-
-    await call.answer()
-# =========================
-# CALLBACK NEXT
-# =========================
-@router.callback_query(F.data == "next")
-async def next_page(call):
-
-    user_id = call.from_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        return await call.answer("Session expired")
-
-    data = state.get("data", [])
+    data = state.get("data") or []
     if not data:
         return await call.answer("No data")
 
-    page_size = 5
-    max_page = (len(data) - 1) // page_size
+    page = state.get("page", 0)
+    size = state.get("page_size", 5)
 
-    # safety
-    if state["page"] >= max_page:
-        return await call.answer("Last page")
+    total = max(1, (len(data) + size - 1) // size)
 
-    state["page"] += 1
-
-    # clamp safety (anti bug)
-    state["page"] = min(state["page"], max_page)
-
-    await render_page(call, user_id)
-    
-# =========================
-# CALLBACK PREV
-# =========================
-
-@router.callback_query(F.data == "prev")
-async def prev_page(call):
-
-    user_id = call.from_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        return await call.answer("Session expired")
-
-    if state.get("page", 0) <= 0:
-        state["page"] = 0
-        return await call.answer("First page")
-
-    state["page"] -= 1
-
-    # safety clamp
-    state["page"] = max(0, state["page"])
-
-    await render_page(call, user_id)
-# =========================
-# CALLBACK JUMP PAGE
-# =========================
-@router.callback_query(F.data.startswith("page:"))
-async def goto_page(call):
-
-    user_id = call.from_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        return await call.answer("Session expired")
-
-    data = state.get("data", [])
-    if not data:
-        return await call.answer("No data")
-
-    # =========================
-    # SAFE PARSE
-    # =========================
-    try:
-        page = int(call.data.split(":")[1])
-    except (ValueError, IndexError):
-        return await call.answer("Invalid page")
-
-    page_size = 5
-    max_page = (len(data) - 1) // page_size
-
-    # =========================
-    # CLAMP SAFETY
-    # =========================
-    page = max(0, min(page, max_page))
-
+    # clamp
+    page = max(0, min(page, total - 1))
     state["page"] = page
 
-    # =========================
-    # UPDATE HISTORY (IMPORTANT)
-    # =========================
-    if "page_history" not in globals():
-        page_history[user_id] = set()
+    page_history.setdefault(user_id, set()).add(page)
 
-    page_history[user_id].add(page)
+    start = page * size
+    chunk = data[start:start + size]
+
+    # SEND MEDIA
+    await send_media(call.bot, call.message.chat.id, chunk)
+
+    text = (
+        f"📦 CODE: <code>{state['code']}</code>\n"
+        f"📄 Page: {page+1}/{total}\n"
+        f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
+    )
+
+    kb = build_kb(user_id, page, total)
+
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except:
+        pass
+
+    await call.answer()
+
+
+# =========================
+# SINGLE PAGINATION HANDLER
+# =========================
+@router.callback_query(
+    F.data.in_(["next", "prev"]) | F.data.startswith("page:")
+)
+async def pagination(call: CallbackQuery):
+
+    user_id = call.from_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        return await call.answer("Session expired")
+
+    data = state.get("data") or []
+    if not data:
+        return await call.answer("No data")
+
+    page = state.get("page", 0)
+    size = state.get("page_size", 5)
+    max_page = (len(data) - 1) // size
+
+    if call.data == "next":
+        page += 1
+    elif call.data == "prev":
+        page -= 1
+    else:
+        try:
+            page = int(call.data.split(":")[1])
+        except:
+            return await call.answer("Error")
+
+    page = max(0, min(page, max_page))
+    state["page"] = page
 
     await render_page(call, user_id)
+
+
+# =========================
+# NOOP
+# =========================
+@router.callback_query(F.data == "noop")
+async def noop(call):
+    await call.answer("😏")
+
+
+# =========================
+# START GET FILE
+# =========================
+@router.message(F.text == "📥 Get File")
+async def start_get(message: Message):
+
+    user_id = message.from_user.id
+    user_states[user_id] = {"mode": "getfile"}
+
+    await message.answer("📥 Kirim CODE 😏")
+
+
+# =========================
+# RECEIVE CODE
+# =========================
+@router.message(F.text & ~F.text.startswith("/"))
+async def receive_code(message: Message):
+
+    user_id = message.from_user.id
+    state = user_states.get(user_id)
+
+    if not state or state.get("mode") != "getfile":
+        return
+
+    if is_cooldown(user_id):
+        return await message.answer("⏳ Jangan spam")
+
+    codes = re.findall(r"\btzy_[A-Za-z0-9_]+\b", message.text or "")
+
+    if not codes:
+        return await message.answer("❌ CODE salah")
+
+    codes = list(dict.fromkeys(codes))[:3]
+
+    all_data = []
+
+    for code in codes:
+        data = await load_media(code)
+        if data:
+            all_data.extend(data)
+        await asyncio.sleep(0.15)
+
+    if not all_data:
+        return await message.answer("❌ Tidak ditemukan")
+
+    # LIMIT
+    all_data = all_data[:50]
+
+    # SAVE STATE (PAGINATION MODE)
+    user_states[user_id] = {
+        "mode": "view",
+        "code": codes[0],
+        "page": 0,
+        "page_size": 5,
+        "data": all_data
+    }
+
+    page_history[user_id] = set()
+
+    await message.answer(f"📦 Ditemukan {len(all_data)} file")
+
+    # RENDER PAGE PERTAMA
+    fake_call = type("obj", (), {
+        "bot": message.bot,
+        "message": message,
+        "answer": message.answer
+    })
+
+    await render_page(fake_call, user_id)
 # ======================
 # ADD USER FUNCTION
 # =========================
@@ -1027,22 +1004,23 @@ async def account_cmd(message: Message):
 
     user = message.from_user
 
-    # simpan user kalau belum ada
+    # =========================
+    # SAVE USER
+    # =========================
     await add_user(
         user.id,
-        user.username or "none",
-        user.full_name
+        user.username or "",
+        user.full_name or "No Name"
     )
 
     async with db_pool.acquire() as conn:
 
-        # ambil semua code milik user
         codes = await conn.fetch(
             """
             SELECT code, total_media, total_size
             FROM codes
             WHERE owner_id = $1
-            ORDER BY code DESC
+            ORDER BY id DESC
             LIMIT 10
             """,
             user.id
@@ -1054,35 +1032,45 @@ async def account_cmd(message: Message):
         )
 
     # =========================
-    # FORMAT LIST CODE
+    # FORMAT CODE LIST
     # =========================
     if codes:
-        code_text = "\n".join(
-            f"📦 {c['code']} | {c['total_media']} file"
-            for c in codes
-        )
+        code_lines = []
+        for c in codes:
+            code_lines.append(
+                f"📦 <code>{c['code']}</code>\n"
+                f"   └ {c['total_media']} file"
+            )
+
+        code_text = "\n".join(code_lines)
+
     else:
-        code_text = "❌ Belum punya code"
+        code_text = "❌ Belum ada code"
 
-    await message.answer(
-        f"👤 ACCOUNT INFO\n\n"
-        f"🆔 ID: {user.id}\n"
-        f"👤 Name: {user.full_name}\n"
-        f"🔗 Username: @{user.username or 'none'}\n\n"
-        f"📊 TOTAL CODE: {total_codes}\n\n"
-        f"📁 LAST CODE:\n{code_text}"
+    # =========================
+    # FORMAT USER
+    # =========================
+    username = f"@{user.username}" if user.username else "Tidak ada"
+
+    text = (
+        "👤 <b>ACCOUNT INFO</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{user.id}</code>\n"
+        f"👤 <b>Name:</b> {user.full_name}\n"
+        f"🔗 <b>Username:</b> {username}\n\n"
+        f"📊 <b>Total Code:</b> {total_codes}\n\n"
+        f"📁 <b>Last Code:</b>\n{code_text}"
     )
-# =========================
-# VIP
-# =========================
 
+    await message.answer(text, parse_mode="HTML")
+# =========================
+# VIP KEYBOARD
+# =========================
 def vip_kb():
 
-    link = (
-        VIP_LINK
-        .replace("https://t.me/", "")
-        .replace("@", "")
-    )
+    if not VIP_LINK:
+        return None
+
+    link = VIP_LINK.replace("https://t.me/", "").replace("@", "").strip()
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1102,401 +1090,427 @@ def vip_kb():
     )
 
 
+# =========================
+# VIP COMMAND
+# =========================
 @router.message(F.text == "/vip")
 async def vip_cmd(message: Message):
 
-    await message.answer(
-        "💎 VIP ACCESS ACTIVATED (DEMO MODE)\n\n"
+    text = (
+        "💎 <b>VIP ACCESS</b>\n\n"
         "━━━━━━━━━━━━━━\n"
-        "🔥 BENEFIT VIP\n"
+        "🔥 <b>BENEFIT VIP</b>\n"
         "━━━━━━━━━━━━━━\n\n"
         "⚡ Unlimited Upload File\n"
         "⚡ Priority Processing (No Queue)\n"
         "⚡ Fast Get File Access\n"
         "⚡ Anti Limit System\n"
-        "⚡ Full Media Support (Photo / Video / Document)\n\n"
+        "⚡ Full Media Support\n\n"
         "━━━━━━━━━━━━━━\n"
-        "📦 STORAGE INFO\n"
+        "📦 <b>STORAGE INFO</b>\n"
         "━━━━━━━━━━━━━━\n"
-        "📁 Media disimpan full di channel database\n"
-        "🔒 Aman (hanya bisa diakses via CODE)\n"
-        "⚠ Tapi jangan harap gratisan diperlakukan spesial 😏\n\n"
+        "📁 Media disimpan di channel database\n"
+        "🔒 Aman via CODE system\n\n"
         "━━━━━━━━━━━━━━\n"
-        "💀 SAVAGE NOTICE\n"
+        "💀 <b>NOTICE</b>\n"
         "━━━━━━━━━━━━━━\n"
-        "• VIP bukan buat orang yang cuma nanya doang\n"
-        "• Bot gak peduli kamu buru-buru\n"
-        "• Semua tetap pakai sistem CODE\n"
-        "• Salah pakai? ya itu masalah kamu sendiri 😌\n",
-        reply_markup=vip_kb()
+        "• VIP = akses, bukan privilege manja\n"
+        "• Semua tetap pakai sistem\n"
+        "• Salah pakai = tanggung sendiri 😏"
     )
 
+    await message.answer(
+        text,
+        reply_markup=vip_kb(),
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+
+# =========================
+# VIP CANCEL
+# =========================
 @router.callback_query(F.data == "vip_cancel")
 async def vip_cancel(call: CallbackQuery):
 
-    await call.message.edit_text(
-        "❌ VIP ACCESS CLOSED\n\n"
-        "😏 Ya udah, balik ke mode gratisan lagi.\n"
-        "Kalau masih mau VIP, jangan cuma klik—tapi bayar juga."
-    )
+    try:
+        await call.message.edit_text(
+            "❌ <b>VIP CLOSED</b>\n\n"
+            "😏 Balik ke mode gratisan.\n"
+            "Kalau serius, jangan cuma klik.",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
+    await call.answer()
 # =========================
 # ADMIN CHECK
 # =========================
-
-def is_admin(
-    user_id: int
-):
-
+def is_admin(user_id: int):
     return user_id in ADMINS
+
 
 # =========================
 # ADD ADMIN
 # =========================
-
 @router.message(F.text.startswith("/addadmin"))
 async def add_admin(message: Message):
 
-    # =========================
-    # SECURITY CHECK
-    # =========================
     if not is_admin(message.from_user.id):
         return await message.answer(
-            "🚫 ACCESS DENIED\n\n"
-            "😏 Kamu bukan admin.\n"
-            "Jangan coba-coba jadi Tuhan di bot ini."
+            "🚫 ACCESS DENIED\n\nLu siapa 😏"
         )
 
-    # =========================
-    # PARSE ARGUMENT
-    # =========================
     parts = message.text.split()
 
     if len(parts) != 2:
         return await message.answer(
-            "❌ FORMAT SALAH\n\n"
-            "Gunakan:\n"
-            "/addadmin <id>"
+            "❌ Format:\n/addadmin <user_id>"
         )
 
     # =========================
-    # VALIDATE USER ID
+    # VALIDATE
     # =========================
     try:
         uid = int(parts[1])
-    except ValueError:
+    except:
+        return await message.answer("❌ ID harus angka")
+
+    # =========================
+    # PREVENT DUPLICATE
+    # =========================
+    if uid in ADMINS:
         return await message.answer(
-            "❌ INVALID ID\n\n"
-            "😏 Itu bukan angka, jangan ngadi-ngadi."
+            "⚠️ Sudah admin 😏"
         )
 
     # =========================
-    # ADD ADMIN
+    # ADD
     # =========================
     ADMINS.add(uid)
 
-    await message.answer(
-        "💀 ADMIN ADDED\n\n"
-        f"👤 User ID: {uid}\n\n"
-        "😏 Sekarang dia punya akses.\n"
-        "Semoga gak disalahgunakan ya..."
-    )
-# =========================
-# STATISTIC
-# =========================
+    print(f"[ADMIN] Added: {uid} by {message.from_user.id}")
 
+    await message.answer(
+        f"💀 ADMIN ADDED\n\nID: {uid}"
+    )
+
+
+# =========================
+# REMOVE ADMIN (WAJIB ADA)
+# =========================
+@router.message(F.text.startswith("/deladmin"))
+async def del_admin(message: Message):
+
+    if not is_admin(message.from_user.id):
+        return await message.answer("🚫 No access")
+
+    parts = message.text.split()
+
+    if len(parts) != 2:
+        return await message.answer(
+            "❌ Format:\n/deladmin <user_id>"
+        )
+
+    try:
+        uid = int(parts[1])
+    except:
+        return await message.answer("❌ ID invalid")
+
+    # =========================
+    # PROTECT
+    # =========================
+    if uid == message.from_user.id:
+        return await message.answer(
+            "⚠️ Gak bisa hapus diri sendiri 😏"
+        )
+
+    if uid not in ADMINS:
+        return await message.answer(
+            "❌ Bukan admin"
+        )
+
+    ADMINS.remove(uid)
+
+    print(f"[ADMIN] Removed: {uid} by {message.from_user.id}")
+
+    await message.answer(
+        f"💀 ADMIN REMOVED\n\nID: {uid}"
+    )
+from aiogram import F, Router
+from aiogram.types import Message
+import asyncio
+import time
+
+router = Router()
+
+# =========================
+# ADMIN CHECK
+# =========================
+def is_admin(user_id: int):
+    return user_id in ADMINS
+
+
+# =========================
+# STATISTIC (UPGRADE)
+# =========================
 @router.message(F.text == "/stat")
 async def stat_cmd(message: Message):
 
-    # =========================
-    # ADMIN CHECK
-    # =========================
     if not is_admin(message.from_user.id):
-        return await message.answer(
-            "🚫 ACCESS DENIED\n\n"
-            "😏 Kamu bukan admin.\n"
-            "Stat ini bukan buat rakyat biasa."
-        )
+        return await message.answer("🚫 ACCESS DENIED")
 
-    # =========================
-    # FETCH STAT SAFE
-    # =========================
     try:
         async with db_pool.acquire() as conn:
 
-            users = await conn.fetchval(
-                "SELECT COUNT(*) FROM users"
-            )
+            users = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+            codes = await conn.fetchval("SELECT COUNT(*) FROM codes") or 0
+            media = await conn.fetchval("SELECT COUNT(*) FROM medias") or 0
 
-            codes = await conn.fetchval(
-                "SELECT COUNT(*) FROM codes"
-            )
+            total_size = await conn.fetchval(
+                "SELECT COALESCE(SUM(total_size),0) FROM codes"
+            ) or 0
 
-            media = await conn.fetchval(
-                "SELECT COUNT(*) FROM medias"
-            )
+    except Exception as e:
+        print("STAT ERROR:", e)
+        return await message.answer("⚠️ DATABASE ERROR")
 
-    except Exception:
-        return await message.answer(
-            "⚠️ DATABASE ERROR\n\n"
-            "😏 Server lagi ngambek, coba lagi nanti."
-        )
+    mb = total_size / (1024 * 1024)
 
-    # =========================
-    # RESPONSE
-    # =========================
     await message.answer(
-        "📊 SYSTEM STATISTICS\n\n"
+        "📊 <b>SYSTEM STATISTICS</b>\n\n"
         "━━━━━━━━━━━━━━\n"
-        f"👤 Users  : {users}\n"
-        f"🔑 Codes  : {codes}\n"
-        f"📦 Media  : {media}\n"
-        "━━━━━━━━━━━━━━\n\n"
-        "💀 Bot still alive...\n"
-        "😏 But everything is being watched."
+        f"👤 Users   : {users}\n"
+        f"🔑 Codes   : {codes}\n"
+        f"📦 Media   : {media}\n"
+        f"💾 Storage : {mb:.2f} MB\n"
+        "━━━━━━━━━━━━━━",
+        parse_mode="HTML"
     )
-# =========================
-# BROADCAST
-# =========================
 
+
+# =========================
+# BROADCAST (DEWA VERSION)
+# =========================
 @router.message(F.text.startswith("/broadcast"))
 async def broadcast_cmd(message: Message):
 
-    # =========================
-    # ADMIN CHECK
-    # =========================
     if not is_admin(message.from_user.id):
-        return await message.answer(
-            "🚫 ACCESS DENIED\n\n"
-            "😏 Kamu bukan admin.\n"
-            "Broadcast itu bukan mainan anak kecil."
-        )
+        return await message.answer("🚫 ACCESS DENIED")
 
-    # =========================
-    # GET MESSAGE TEXT
-    # =========================
     text = message.text.replace("/broadcast", "").strip()
 
     if not text:
-        return await message.answer(
-            "❌ FORMAT SALAH\n\n"
-            "Gunakan:\n"
-            "/broadcast pesan"
-        )
+        return await message.answer("❌ Format:\n/broadcast pesan")
 
     # =========================
     # LOAD USERS
     # =========================
     try:
         async with db_pool.acquire() as conn:
-            users = await conn.fetch(
-                "SELECT user_id FROM users"
-            )
-    except Exception:
-        return await message.answer(
-            "⚠️ DATABASE ERROR\n\n"
-            "😏 Gagal ambil user list."
-        )
+            users = await conn.fetch("SELECT user_id FROM users")
+    except Exception as e:
+        print("BC ERROR:", e)
+        return await message.answer("⚠️ DATABASE ERROR")
 
-    # =========================
-    # BROADCAST LOOP
-    # =========================
+    total = len(users)
     sent = 0
     failed = 0
 
-    await message.answer(
-        "📡 BROADCAST STARTED...\n"
-        "💀 Jangan ganggu sistem..."
+    start_time = time.time()
+
+    status = await message.answer(
+        f"📡 <b>BROADCAST STARTED</b>\n\n"
+        f"👥 Total user: {total}\n"
+        f"⏳ Progress: 0%\n\n"
+        "💀 System running...",
+        parse_mode="HTML"
     )
 
-    for user in users:
+    # =========================
+    # LOOP
+    # =========================
+    for i, user in enumerate(users, start=1):
 
         try:
             await message.bot.send_message(
                 chat_id=user["user_id"],
                 text=text
             )
-
             sent += 1
-
-            # anti flood Telegram
-            await asyncio.sleep(0.05)
 
         except Exception:
             failed += 1
-            continue
+
+        # =========================
+        # SMART DELAY (ANTI BANNED)
+        # =========================
+        if i % 20 == 0:
+            await asyncio.sleep(1.2)  # heavy pause
+        else:
+            await asyncio.sleep(0.04)  # normal delay
+
+        # =========================
+        # UPDATE PROGRESS (SETIAP 25 USER)
+        # =========================
+        if i % 25 == 0:
+            percent = (i / total) * 100
+
+            try:
+                await status.edit_text(
+                    f"📡 <b>BROADCAST RUNNING</b>\n\n"
+                    f"👥 Total   : {total}\n"
+                    f"📤 Sent    : {sent}\n"
+                    f"❌ Failed  : {failed}\n"
+                    f"⏳ Progress: {percent:.1f}%\n\n"
+                    "⚡ Please wait...",
+                    parse_mode="HTML"
+                )
+            except:
+                pass
 
     # =========================
-    # RESULT
+    # DONE
     # =========================
-    await message.answer(
-        "📡 BROADCAST FINISHED\n\n"
+    duration = time.time() - start_time
+
+    await status.edit_text(
+        "📡 <b>BROADCAST FINISHED</b>\n\n"
         "━━━━━━━━━━━━━━\n"
-        f"📤 Sent   : {sent}\n"
-        f"❌ Failed : {failed}\n"
+        f"👥 Total   : {total}\n"
+        f"📤 Sent    : {sent}\n"
+        f"❌ Failed  : {failed}\n"
+        f"⏱ Time    : {duration:.1f}s\n"
         "━━━━━━━━━━━━━━\n\n"
-        "💀 Semua user sudah kena pesan.\n"
-        "😏 Tinggal tunggu reaksi dunia."
+        "💀 Mission complete 😏",
+        parse_mode="HTML"
     )
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.types import Message
+import asyncio
+
+router = Router()
+
 # =========================
 # HELP TEXT
 # =========================
-
 HELP_TEXT = """
+<b>🔥 TZY FILE BOT — HELP MENU 🔥</b>
 
-🔥 TZY FILE BOT — HELP MENU 🔥
-
-Selamat datang di TZY FILE BOT.
-Bot ini dibuat buat upload, simpan, dan ambil file pakai CODE.
-
-━━━━━━━━━━━━━━
-📤 UP FILE
-━━━━━━━━━━━━━━
-
-1. Tekan 📤 Up File
-2. Kirim foto / video / document
-3. Tekan ✅ DONE
-4. Bot generate CODE otomatis
-
-Catatan:
-• ❌ CANCEL = batalkan upload
-• Simpan CODE sendiri
-• Jangan upload lalu lupa DONE
+Selamat datang di <b>TZY FILE BOT</b>
+Bot untuk upload & ambil file pakai <code>CODE</code>
 
 ━━━━━━━━━━━━━━
-📥 GET FILE
+📤 <b>UPLOAD FILE</b>
 ━━━━━━━━━━━━━━
+1. Tekan <b>📤 Up File</b>
+2. Kirim media
+3. Tekan <b>✅ DONE</b>
+4. Bot kasih CODE
 
-1. Tekan 📥 Get File
+⚠️ Jangan lupa DONE!
+
+━━━━━━━━━━━━━━
+📥 <b>GET FILE</b>
+━━━━━━━━━━━━━━
+1. Tekan <b>📥 Get File</b>
 2. Kirim CODE
-3. Bot kirim file otomatis
-4. Gunakan pagination kalau file banyak
+3. File dikirim otomatis
 
-Kalau muncul:
-❌ CODE tidak ditemukan
-
-Cek:
-• Salah ketik
-• CODE invalid
-• Salah input
+❌ Kalau error:
+• CODE salah
+• Tidak ditemukan
 
 ━━━━━━━━━━━━━━
-👤 ACCOUNT
+👤 <b>ACCOUNT</b>
 ━━━━━━━━━━━━━━
-
-Menampilkan:
-
-🆔 Telegram ID
-👤 Nama akun
-🔗 Username
+• ID
+• Nama
+• Username
 
 ━━━━━━━━━━━━━━
-💎 VIP FEATURE
+💎 <b>VIP</b>
 ━━━━━━━━━━━━━━
-
-🔥 Unlimited Upload
-🔥 Faster Access
-🔥 Priority Queue
-🔥 Premium Support
+⚡ Unlimited Upload  
+⚡ Faster Access  
+⚡ Priority System  
 
 ━━━━━━━━━━━━━━
-📋 RULE BOT
+🛠 <b>ADMIN</b>
 ━━━━━━━━━━━━━━
-
-✅ Gunakan sewajarnya
-✅ Simpan CODE
-✅ Ikuti aturan
-
-❌ Spam
-❌ Flood
-❌ Abuse system
+<code>/stat</code> → statistik  
+<code>/broadcast</code> → kirim ke semua user  
+<code>/addadmin</code> → tambah admin  
 
 ━━━━━━━━━━━━━━
-🛠 ADMIN COMMAND
+⚠ <b>RULE</b>
 ━━━━━━━━━━━━━━
-
-/stat
-→ statistik bot
-
-/broadcast pesan
-→ broadcast user
-
-/addadmin ID
-→ tambah admin
+❌ Spam  
+❌ Abuse  
+❌ Flood  
 
 ━━━━━━━━━━━━━━
-⚠ COMMON ERROR
+💀 <b>NOTE</b>
 ━━━━━━━━━━━━━━
-
-CODE tidak ditemukan
-→ cek code
-
-Upload kosong
-→ upload dulu
-
-Not allowed
-→ bukan admin
+• Bot bukan cenayang 😏  
+• Salah input = salah sendiri  
+• Simpan CODE baik-baik  
 
 ━━━━━━━━━━━━━━
-💀 SAVAGE MODE
+🚀 <b>READY</b>
 ━━━━━━━━━━━━━━
-
-• Bot baca command, bukan pikiran 😌
-• Salah ketik bukan bug
-• Simpan CODE sebelum hilang
-• Tombol ada buat dipencet 😏
-
-━━━━━━━━━━━━━━
-🚀 BOT READY
-━━━━━━━━━━━━━━
-
 """
 
 # =========================
 # HELP HANDLER
 # =========================
-
 @router.message(F.text == "/help")
 async def help_cmd(message: Message):
 
+    await asyncio.sleep(0.2)
+
     await message.answer(
-        HELP_TEXT
+        HELP_TEXT,
+        parse_mode="HTML"
     )
 
 
 @router.message(F.text == "❓ Help")
 async def help_button(message: Message):
 
+    await asyncio.sleep(0.2)
+
     await message.answer(
-        HELP_TEXT
+        HELP_TEXT,
+        parse_mode="HTML"
     )
+
+
 # =========================
 # STARTUP
 # =========================
-
 async def main():
 
-    bot = Bot(
-        token=BOT_TOKEN
-    )
-
+    bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    dp.include_router(
-        router
-    )
+    dp.include_router(router)
 
     await init_db()
 
-    try:
+    print("🔥 BOT STARTED")
 
-        await dp.start_polling(
-            bot
-        )
+    try:
+        await dp.start_polling(bot)
+
+    except Exception as e:
+        print("❌ BOT ERROR:", e)
 
     finally:
+        print("💀 SHUTDOWN...")
 
         if db_pool:
-
             await db_pool.close()
 
         await bot.session.close()
@@ -1505,11 +1519,5 @@ async def main():
 # =========================
 # RUN
 # =========================
-
 if __name__ == "__main__":
-
-    import asyncio
-
-    asyncio.run(
-        main()
-    )
+    asyncio.run(main())
