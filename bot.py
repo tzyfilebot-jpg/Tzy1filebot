@@ -156,43 +156,6 @@ async def safe_send(func, *args, **kwargs):
             print("ERROR:", e)
             await asyncio.sleep(1)
 
-# =========================
-# MEDIA SENDER (SAFE)
-# =========================
-
-async def send_media(bot, chat_id: int, chunk: list):
-
-    if not chunk:
-        return
-
-    media_group = []
-
-    for m in chunk[:5]:
-        file_type = (m.get("file_type") or "").lower()
-        file_id = m.get("file_id")
-
-        if not file_id:
-            continue
-
-        if file_type == "photo":
-            media_group.append(InputMediaPhoto(media=file_id))
-
-        elif file_type == "video":
-            media_group.append(InputMediaVideo(media=file_id))
-
-        else:
-            media_group.append(InputMediaDocument(media=file_id))
-
-    if not media_group:
-        return
-
-    await safe_send(
-        bot.send_media_group,
-        chat_id=chat_id,
-        media=media_group
-    )
-
-    await asyncio.sleep(1)
 
 # =========================
 # ROUTER
@@ -822,49 +785,47 @@ def build_kb(user_id, page, total_pages):
 # =========================
 # RENDER PAGE (CORE)
 # =========================
-async def render_page(call, user_id):
-
+async def render_page(user_id: int, bot, chat_id: int):
     state = user_states.get(user_id)
+
     if not state:
-        return await call.answer("Session expired")
+        return
 
     data = state.get("data") or []
     if not data:
-        return await call.answer("No data")
+        return
 
     page = state.get("page", 0)
     size = state.get("page_size", 5)
 
-    total = max(1, (len(data) + size - 1) // size)
+    total_pages = max(1, (len(data) + size - 1) // size)
 
-    # clamp
-    page = max(0, min(page, total - 1))
+    # clamp page
+    page = max(0, min(page, total_pages - 1))
     state["page"] = page
-
-    page_history.setdefault(user_id, set()).add(page)
 
     start = page * size
     chunk = data[start:start + size]
 
+    # =========================
     # SEND MEDIA
-    await send_media(call.bot, call.message.chat.id, chunk)
+    # =========================
+    await send_media(bot, chat_id, chunk)
 
     text = (
         f"📦 CODE: <code>{state['code']}</code>\n"
-        f"📄 Page: {page+1}/{total}\n"
+        f"📄 Page: {page+1}/{total_pages}\n"
         f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
     )
 
-    kb = build_kb(user_id, page, total)
+    kb = build_kb(user_id, page, total_pages)
 
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except:
-        pass
-
-    await call.answer()
-
-
+    await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
 # =========================
 # SINGLE PAGINATION HANDLER
 # =========================
@@ -951,15 +912,13 @@ async def receive_code(message: Message):
         data = await load_media(code)
         if data:
             all_data.extend(data)
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.1)
 
     if not all_data:
         return await message.answer("❌ Tidak ditemukan")
 
-    # LIMIT
     all_data = all_data[:50]
 
-    # SAVE STATE (PAGINATION MODE)
     user_states[user_id] = {
         "mode": "view",
         "code": codes[0],
@@ -972,15 +931,8 @@ async def receive_code(message: Message):
 
     await message.answer(f"📦 Ditemukan {len(all_data)} file")
 
-    # RENDER PAGE PERTAMA
-    fake_call = type("obj", (), {
-        "bot": message.bot,
-        "message": message,
-        "answer": message.answer,
-        "data": None
-    })
-
-    await render_page(fake_call, user_id)
+    # 🔥 FINAL CLEAN CALL (NO FAKE CALL)
+    await render_page(user_id, message.bot, message.chat.id)
 # ======================
 # ADD USER FUNCTION
 # =========================
