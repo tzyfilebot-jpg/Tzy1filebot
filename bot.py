@@ -3,9 +3,13 @@
 # =========================
 
 import os
+import re
 import time
 import secrets
 import asyncpg
+import asyncio
+import logging
+from aiogram import Dispatcher
 
 from dotenv import load_dotenv
 
@@ -23,7 +27,14 @@ from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramRetryAfter,
 )
+# =========================
+# LOGGING CONFIG
+# =========================
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 # =========================
 # CONFIG
 # =========================
