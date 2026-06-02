@@ -106,6 +106,7 @@ user_click_lock = {}
 upload_sessions = {}
 user_states = {}
 last_edit_time = {}
+user_last_action = {}
 
 # =========================
 # ANTI BANNED SYSTEM 🔥
@@ -447,9 +448,10 @@ async def handle_media(message: Message):
     size = getattr(file_obj, "file_size", 0) or 0
 
     s["items"].append({
-        "file_id": file_id,
-        "size": size
-    })
+    "file_id": file_id,
+    "type": "photo" if message.photo else "video" if message.video else "document",
+    "size": size
+})
 
     # =========================
     # DELETE USER MESSAGE
@@ -959,7 +961,8 @@ async def receive_code(message: Message):
     fake_call = type("obj", (), {
         "bot": message.bot,
         "message": message,
-        "answer": message.answer
+        "answer": message.answer,
+        "data": None
     })
 
     await render_page(fake_call, user_id)
@@ -1238,19 +1241,6 @@ async def del_admin(message: Message):
     await message.answer(
         f"💀 ADMIN REMOVED\n\nID: {uid}"
     )
-from aiogram import F, Router
-from aiogram.types import Message
-import asyncio
-import time
-
-router = Router()
-
-# =========================
-# ADMIN CHECK
-# =========================
-def is_admin(user_id: int):
-    return user_id in ADMINS
-
 
 # =========================
 # STATISTIC (UPGRADE)
@@ -1386,11 +1376,6 @@ async def broadcast_cmd(message: Message):
         "💀 Mission complete 😏",
         parse_mode="HTML"
     )
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message
-import asyncio
-
-router = Router()
 
 # =========================
 # HELP TEXT
