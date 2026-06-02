@@ -3,15 +3,13 @@
 # =========================
 
 import os
-import re
-import secrets
-import string
-import asyncpg
 import time
+import secrets
+import asyncpg
 
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Router, F
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -19,12 +17,12 @@ from aiogram.types import (
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputMediaDocument
 )
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramRetryAfter,
+)
 
 # =========================
 # CONFIG
@@ -36,16 +34,39 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 CHANNEL_DB = os.getenv("CHANNEL_DB")
-ADMINS = set(
-    int(x)
-    for x in os.getenv("ADMINS", "").split(",")
-    if x.strip().isdigit()
-)
 
 FORCE_CHANNEL = os.getenv("FORCE_CHANNEL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL")
 NOTIFICATION_CHANNEL = os.getenv("NOTIFICATION_CHANNEL")
 VIP_LINK = os.getenv("VIP_LINK")
+
+ADMINS = {
+    int(x)
+    for x in os.getenv("ADMINS", "").split(",")
+    if x.strip().isdigit()
+}
+
+# =========================
+# SECURITY CONFIG
+# =========================
+
+SESSION_TIMEOUT = 1800
+GETFILE_COOLDOWN = 5
+MAX_UPLOAD_FILES = 100
+MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
+
+# =========================
+# ENV VALIDATION
+# =========================
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN belum diisi")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL belum diisi")
+
+if not CHANNEL_DB:
+    raise RuntimeError("CHANNEL_DB belum diisi")
 
 # =========================
 # DB POOL
@@ -53,15 +74,14 @@ VIP_LINK = os.getenv("VIP_LINK")
 
 db_pool: asyncpg.Pool | None = None
 
+
 async def init_db():
     global db_pool
 
     db_pool = await asyncpg.create_pool(
         DATABASE_URL,
-
         min_size=1,
         max_size=10,
-
         statement_cache_size=0,
         command_timeout=60
     )
@@ -69,11 +89,14 @@ async def init_db():
     async with db_pool.acquire() as conn:
 
         await conn.execute("""
-
         CREATE TABLE IF NOT EXISTS users(
             user_id BIGINT PRIMARY KEY,
             username TEXT,
             fullname TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS admins(
+            user_id BIGINT PRIMARY KEY
         );
 
         CREATE TABLE IF NOT EXISTS codes(
@@ -81,7 +104,8 @@ async def init_db():
             code TEXT UNIQUE,
             owner_id BIGINT,
             total_media INT,
-            total_size BIGINT
+            total_size BIGINT,
+            created_at TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS medias(
@@ -92,19 +116,25 @@ async def init_db():
             file_size BIGINT
         );
         """)
+
 # =========================
 # CACHE
 # =========================
 
 cooldown = {
-    "global": {},   # user_id -> last click
-    "page": {},     # (user_id, page) -> last open
+    "global": {},
+    "page": {},
+    "getfile": {},
 }
-page_history = {}  # user_id -> {page: last_open_time}
-page_cooldown = {}  # user_id -> last_switch_time
+
+page_history = {}
+page_cooldown = {}
+
 user_click_lock = {}
+
 upload_sessions = {}
 user_states = {}
+
 last_edit_time = {}
 
 # =========================
@@ -118,7 +148,6 @@ router = Router()
 # =========================
 
 def get_keyboard():
-
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -127,8 +156,9 @@ def get_keyboard():
             ]
         ],
         resize_keyboard=True,
-        input_field_placeholder="Upload atau ambil file... jangan bingung 😏"
+        input_field_placeholder="Upload atau ambil file..."
     )
+
 # =========================
 # FORCE SUB
 # =========================
@@ -138,30 +168,35 @@ async def check_force_sub(
     user_id: int,
     channel: str
 ):
-
     try:
 
-        ch = channel.replace("@", "")
+        ch = str(channel).replace("@", "").strip()
+
+        if not ch:
+            return True
 
         member = await bot.get_chat_member(
             f"@{ch}",
             user_id
         )
 
-        return member.status in [
+        return member.status in (
             "member",
             "administrator",
             "creator"
-        ]
+        )
 
-    except Exception:
+    except TelegramBadRequest:
+        return False
 
+    except Exception as e:
+        print("force_sub error:", e)
         return False
 
 
 def force_kb(channel):
 
-    ch = channel.replace("@", "")
+    ch = str(channel).replace("@", "").strip()
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -179,88 +214,6 @@ def force_kb(channel):
             ]
         ]
     )
-# =========================
-# START
-# =========================
-
-@router.message(F.text == "/start")
-async def start(message: Message, bot: Bot):
-
-    user = message.from_user
-
-    # FORCE SUB FIRST (lebih efisien)
-    if FORCE_CHANNEL:
-        ok = await check_force_sub(bot, user.id, FORCE_CHANNEL)
-
-        if not ok:
-            return await message.answer(
-                "⚠️ ACCESS BLOCKED\n\n"
-                "😏 Kamu belum join channel.\n"
-                "Join dulu, baru bisa pakai bot.",
-                reply_markup=force_kb(FORCE_CHANNEL)
-            )
-
-    # SAVE USER (safe)
-    try:
-        await add_user(
-            user.id,
-            user.username or "none",
-            user.full_name
-        )
-    except Exception:
-        pass
-
-    # RESPONSE
-    await message.answer(
-        "🔥 BOT ONLINE\n\n"
-        "😏 Selamat datang di FILE CODE SYSTEM.\n\n"
-        "━━━━━━━━━━━━━━\n"
-        "📌 MENU\n"
-        "━━━━━━━━━━━━━━\n"
-        "📤 Up File → upload file\n"
-        "📥 Get File → ambil file pakai CODE\n\n"
-        "━━━━━━━━━━━━━━\n"
-        "💀 NOTE\n"
-        "━━━━━━━━━━━━━━\n"
-        "• Bot tidak peduli kamu salah input\n"
-        "• CODE hilang = tanggung jawab user\n"
-        "• Jangan spam, nanti dibatasi 😌",
-        reply_markup=get_keyboard()
-    )
-# =========================
-# CHECK SUB
-# =========================
-
-@router.callback_query(F.data == "check_sub")
-async def check_sub(call: CallbackQuery, bot: Bot):
-
-    if not FORCE_CHANNEL:
-        return await call.answer("Force sub OFF", show_alert=True)
-
-    ok = await check_force_sub(
-        bot,
-        call.from_user.id,
-        FORCE_CHANNEL
-    )
-
-    if not ok:
-        return await call.answer(
-            "❌ Kamu belum join channel",
-            show_alert=True
-        )
-
-    # =========================
-    # SUCCESS
-    # =========================
-    await call.message.edit_text("✅ VERIFIED")
-
-    await call.message.answer(
-        "🔥 ACCESS GRANTED\n\n"
-        "😏 Silakan lanjut pakai bot.",
-        reply_markup=get_keyboard()
-    )
-
-    await call.answer()
 # =========================
 # UP FILE INIT
 # =========================
@@ -281,15 +234,18 @@ def upload_kb():
         ]
     )
 
+
 @router.message(F.text == "📤 Up File")
 async def up_file(message: Message):
 
     user_id = message.from_user.id
 
     upload_sessions.pop(user_id, None)
-    user_states.pop(user_id, None)
 
-    user_states[user_id] = {"mode": "upload"}
+    user_states[user_id] = {
+        "mode": "upload",
+        "last_activity": time.time()
+    }
 
     upload_sessions[user_id] = {
         "video": 0,
@@ -308,6 +264,8 @@ async def up_file(message: Message):
     )
 
     upload_sessions[user_id]["msg_id"] = msg.message_id
+
+
 # =========================
 # MEDIA HANDLER
 # =========================
@@ -318,33 +276,38 @@ async def handle_media(message: Message):
     user_id = message.from_user.id
 
     state = user_states.get(user_id)
-    s = upload_sessions.get(user_id)
+    session = upload_sessions.get(user_id)
 
-    # ❌ bukan upload mode
     if not state or state.get("mode") != "upload":
         return
 
-    # ❌ session invalid
-    if not s or not s.get("msg_id"):
+    if not session or not session.get("msg_id"):
         return
 
     # =========================
     # GET FILE DATA
     # =========================
+
     if message.photo:
+
         file_obj = message.photo[-1]
         file_type = "photo"
-        s["photo"] = s.get("photo", 0) + 1
+
+        session["photo"] = session.get("photo", 0) + 1
 
     elif message.video:
+
         file_obj = message.video
         file_type = "video"
-        s["video"] = s.get("video", 0) + 1
+
+        session["video"] = session.get("video", 0) + 1
 
     elif message.document:
+
         file_obj = message.document
         file_type = "document"
-        s["document"] = s.get("document", 0) + 1
+
+        session["document"] = session.get("document", 0) + 1
 
     else:
         return
@@ -353,60 +316,90 @@ async def handle_media(message: Message):
     size = getattr(file_obj, "file_size", 0) or 0
 
     # =========================
-    # SAVE TEMP SESSION
+    # LIMIT FILE COUNT
     # =========================
-    s["items"].append({
+
+    if len(session["items"]) >= MAX_UPLOAD_FILES:
+
+        return await message.answer(
+            f"❌ Maksimal {MAX_UPLOAD_FILES} file per upload."
+        )
+
+    current_size = sum(
+        x["size"]
+        for x in session["items"]
+    )
+
+    if current_size + size > MAX_UPLOAD_SIZE:
+
+        return await message.answer(
+            "❌ Total upload melebihi batas ukuran."
+        )
+
+    # =========================
+    # SAVE SESSION
+    # =========================
+
+    session["items"].append({
         "file_id": file_id,
         "type": file_type,
         "size": size
     })
 
     # =========================
-    # DELETE USER MESSAGE (ANTI SPAM CLEAN)
+    # DELETE USER MESSAGE
     # =========================
+
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
 
     # =========================
-    # THROTTLE EDIT (ANTI FLOOD UI)
+    # THROTTLE EDIT
     # =========================
+
     now = time.time()
+
     if now - last_edit_time.get(user_id, 0) < 0.9:
         return
+
     last_edit_time[user_id] = now
 
     # =========================
     # STATS
     # =========================
-    total = len(s["items"])
+
+    total = len(session["items"])
+
     size_mb = round(
-        sum(x["size"] for x in s["items"]) / (1024 * 1024),
+        sum(x["size"] for x in session["items"])
+        / (1024 * 1024),
         2
     )
 
     text = (
         "📤 UPLOADING...\n\n"
-        f"🎥 Video     : {s.get('video', 0)}\n"
-        f"🖼 Photo     : {s.get('photo', 0)}\n"
-        f"📁 Document  : {s.get('document', 0)}\n"
+        f"🎥 Video     : {session.get('video', 0)}\n"
+        f"🖼 Photo     : {session.get('photo', 0)}\n"
+        f"📁 Document  : {session.get('document', 0)}\n"
         f"📦 Total     : {total}\n"
-        f"💾 Size      : {size_mb} MB\n"
+        f"💾 Size      : {size_mb} MB"
     )
 
-    # =========================
-    # UPDATE MESSAGE
-    # =========================
     try:
+
         await message.bot.edit_message_text(
             chat_id=user_id,
-            message_id=s["msg_id"],
+            message_id=session["msg_id"],
             text=text,
             reply_markup=upload_kb()
         )
+
     except TelegramBadRequest:
         pass
+
+
 # =========================
 # GENERATE CODE
 # =========================
@@ -415,11 +408,19 @@ def generate_code(v, p, d):
 
     import hashlib
 
-    base = f"{v}{p}{d}{secrets.token_hex(4)}"
+    base = (
+        f"{v}"
+        f"{p}"
+        f"{d}"
+        f"{secrets.token_hex(4)}"
+    )
 
-    rand = hashlib.sha1(base.encode()).hexdigest()[:12]
+    rand = hashlib.sha1(
+        base.encode()
+    ).hexdigest()[:12]
 
     return f"tzy_{v}v_{p}p_{d}d_{rand}"
+
 
 # =========================
 # DONE
@@ -429,33 +430,42 @@ def generate_code(v, p, d):
 async def done(call: CallbackQuery):
 
     user_id = call.from_user.id
-    s = upload_sessions.get(user_id)
 
-    if not s or not s.get("items"):
+    session = upload_sessions.get(user_id)
+
+    if not session or not session.get("items"):
+
         return await call.answer(
             "😏 kosong? ya jelas gak ada yang diproses",
             show_alert=True
         )
 
     code = generate_code(
-        s.get("video", 0),
-        s.get("photo", 0),
-        s.get("document", 0)
+        session.get("video", 0),
+        session.get("photo", 0),
+        session.get("document", 0)
     )
 
-    total_items = len(s["items"])
-    total_size = sum(x.get("size", 0) for x in s["items"])
+    total_items = len(session["items"])
+
+    total_size = sum(
+        x.get("size", 0)
+        for x in session["items"]
+    )
 
     saved_items = []
 
     async with db_pool.acquire() as conn:
 
-        # =========================
-        # SAVE CODE META
-        # =========================
         await conn.execute(
             """
-            INSERT INTO codes(code, owner_id, total_media, total_size)
+            INSERT INTO codes
+            (
+                code,
+                owner_id,
+                total_media,
+                total_size
+            )
             VALUES($1,$2,$3,$4)
             """,
             code,
@@ -464,94 +474,101 @@ async def done(call: CallbackQuery):
             total_size
         )
 
-        # =========================
-        # UPLOAD TO CHANNEL (HYBRID STORAGE)
-        # =========================
-        for m in s["items"]:
+        for item in session["items"]:
 
-            file_type = m.get("type")
-            file_id = m.get("file_id")
+            file_type = item["type"]
+            file_id = item["file_id"]
 
-            if file_type == "photo":
-                msg = await call.bot.send_photo(
-                    chat_id=CHANNEL_DB,
-                    photo=file_id
-                )
-                new_file_id = msg.photo[-1].file_id
+            try:
 
-            elif file_type == "video":
-                msg = await call.bot.send_video(
-                    chat_id=CHANNEL_DB,
-                    video=file_id
-                )
-                new_file_id = msg.video.file_id
+                if file_type == "photo":
 
-            else:
-                msg = await call.bot.send_document(
-                    chat_id=CHANNEL_DB,
-                    document=file_id
-                )
-                new_file_id = msg.document.file_id
+                    msg = await call.bot.send_photo(
+                        CHANNEL_DB,
+                        photo=file_id
+                    )
+
+                    new_file_id = msg.photo[-1].file_id
+
+                elif file_type == "video":
+
+                    msg = await call.bot.send_video(
+                        CHANNEL_DB,
+                        video=file_id
+                    )
+
+                    new_file_id = msg.video.file_id
+
+                else:
+
+                    msg = await call.bot.send_document(
+                        CHANNEL_DB,
+                        document=file_id
+                    )
+
+                    new_file_id = msg.document.file_id
+
+            except TelegramRetryAfter as e:
+
+                await asyncio.sleep(e.retry_after)
+
+                continue
 
             saved_items.append(
-                (code, new_file_id, file_type, m.get("size", 0))
+                (
+                    code,
+                    new_file_id,
+                    file_type,
+                    item.get("size", 0)
+                )
             )
 
-        # =========================
-        # SAVE MEDIA INDEX
-        # =========================
-        await conn.executemany(
-            """
-            INSERT INTO medias(code, file_id, file_type, file_size)
-            VALUES($1,$2,$3,$4)
-            """,
-            saved_items
-        )
+        if saved_items:
 
-    # =========================
-    # CLEANUP SESSION
-    # =========================
+            await conn.executemany(
+                """
+                INSERT INTO medias
+                (
+                    code,
+                    file_id,
+                    file_type,
+                    file_size
+                )
+                VALUES($1,$2,$3,$4)
+                """,
+                saved_items
+            )
+
     upload_sessions.pop(user_id, None)
     user_states.pop(user_id, None)
     last_edit_time.pop(user_id, None)
 
-    # =========================
-    # RESPONSE MESSAGE
-    # =========================
     await call.message.edit_text(
         "💀 UPLOAD COMPLETE\n\n"
         f"😏 CODE: <code>{code}</code>\n\n"
         f"📦 Total File : {total_items}\n"
-        f"💾 Size      : {round(total_size / (1024 * 1024), 2)} MB\n\n"
-        "📦 File sudah tersimpan Di Hati😍\n"
+        f"💾 Size : {round(total_size / (1024 * 1024), 2)} MB\n\n"
+        "📦 File berhasil disimpan.\n"
         "🤖 Bot: tzyfilerobot",
         parse_mode="HTML"
     )
+
+
 # =========================
 # CANCEL
 # =========================
 
-@router.callback_query(
-    F.data == "upload_cancel"
-)
-async def cancel(
-    call: CallbackQuery
-):
+@router.callback_query(F.data == "upload_cancel")
+async def cancel(call: CallbackQuery):
 
     user_id = call.from_user.id
 
-    upload_sessions.pop(
-        user_id,
-        None
-    )
-
-    user_states.pop(
-        user_id,
-        None
-    )
+    upload_sessions.pop(user_id, None)
+    user_states.pop(user_id, None)
+    last_edit_time.pop(user_id, None)
 
     await call.message.edit_text(
-        "❌ Cancelled"
+        "❌ Upload dibatalkan."
     )
 # =========================
 # OPEN GET FILE MODE
@@ -570,17 +587,22 @@ async def get_file_start(message: Message):
         "📥 Kirim CODE untuk ambil file kamu\n\n"
         "⚡ Cepetan Cok..."
     )
+
+
 # =========================
 # NORMALIZER
 # =========================
 
 def normalize_type(t):
+
     t = (t or "").lower().strip()
 
     if t in ["photo", "image", "img"]:
         return "photo"
+
     if t in ["video", "vid"]:
         return "video"
+
     if t in ["doc", "document", "file"]:
         return "document"
 
@@ -597,92 +619,136 @@ async def load_media(code: str):
         return []
 
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT file_id, file_type, COALESCE(file_size, 0) AS file_size
+
+        rows = await conn.fetch(
+            """
+            SELECT
+                file_id,
+                file_type,
+                COALESCE(file_size,0) AS file_size
             FROM medias
             WHERE code=$1
             ORDER BY id ASC
-        """, code)
+            """,
+            code
+        )
 
     return [
         {
-            "file_id": r["file_id"],
-            "file_type": normalize_type(r["file_type"]),
-            "file_size": r["file_size"]
+            "file_id": row["file_id"],
+            "file_type": normalize_type(row["file_type"]),
+            "file_size": row["file_size"]
         }
-        for r in rows
+        for row in rows
     ]
+
+
 # =========================
-# SEND MEDIA GROUP (SAFE)
+# SEND MEDIA GROUP
 # =========================
 
-from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
-
-async def send_media(bot, chat_id: int, chunk: list):
+async def send_media(
+    bot,
+    chat_id: int,
+    chunk: list
+):
 
     if not chunk:
         return
 
     media_group = []
 
-    for m in chunk[:5]:  # 👈 FIX: 1 bubble = 5 media
-        file_type = (m.get("file_type") or "").lower().strip()
-        file_id = m.get("file_id")
+    for item in chunk[:5]:
+
+        file_type = (
+            item.get("file_type") or ""
+        ).lower().strip()
+
+        file_id = item.get("file_id")
 
         if not file_id:
             continue
 
         if file_type == "photo":
-            media_group.append(InputMediaPhoto(media=file_id))
+
+            media_group.append(
+                InputMediaPhoto(
+                    media=file_id
+                )
+            )
 
         elif file_type == "video":
-            media_group.append(InputMediaVideo(media=file_id))
+
+            media_group.append(
+                InputMediaVideo(
+                    media=file_id
+                )
+            )
 
         else:
-            media_group.append(InputMediaDocument(media=file_id))
+
+            media_group.append(
+                InputMediaDocument(
+                    media=file_id
+                )
+            )
 
     if not media_group:
         return
 
-    await bot.send_media_group(chat_id=chat_id, media=media_group)
+    await bot.send_media_group(
+        chat_id=chat_id,
+        media=media_group
+    )
+
+
 # =========================
-# GETFILE HANDLER (FIX)
+# GET FILE HANDLER
 # =========================
 
-import re
-
-@router.message(F.text & ~F.text.startswith("/"))
-async def receive_code(message: Message):
+@router.message(
+    F.text &
+    ~F.text.startswith("/")
+)
+async def receive_code(
+    message: Message
+):
 
     user_id = message.from_user.id
     text = (message.text or "").strip()
 
     state = user_states.get(user_id)
 
-    if not state or state.get("mode") != "getfile":
+    if not state:
+        return
+
+    if state.get("mode") != "getfile":
         return
 
     if not text:
         return
 
     # =========================
-    # MULTI CODE EXTRACTION (ROBUST)
+    # MULTI CODE EXTRACTION
     # =========================
+
     codes = re.findall(
         r"CODE\s*[:=]?\s*([A-Za-z0-9_]{6,})",
         text,
         re.IGNORECASE
     )
 
-    # fallback: user cuma paste code
+    # user paste code langsung
     if not codes:
+
         codes = re.findall(
             r"\b([A-Za-z0-9_]{10,})\b",
             text
         )
 
-    # fallback tambahan (CN / variation)
+    # chinese variation
     if not codes:
+
         codes = re.findall(
             r"(?:代码|CODE)\s*[:=]?\s*([A-Za-z0-9_]{6,})",
             text,
@@ -692,12 +758,18 @@ async def receive_code(message: Message):
     # =========================
     # VALIDATION
     # =========================
-    codes = list(dict.fromkeys(codes))  # remove duplicate
+
+    codes = list(
+        dict.fromkeys(codes)
+    )
 
     if not codes:
-        return await message.answer("❌ CODE tidak ditemukan")
 
-    # limit safety (anti spam)
+        return await message.answer(
+            "❌ CODE tidak ditemukan"
+        )
+
+    # anti spam
     codes = codes[:10]
 
     all_data = []
@@ -705,25 +777,38 @@ async def receive_code(message: Message):
     # =========================
     # LOAD ALL CODES
     # =========================
+
     for code in codes:
+
         code = code.strip()
 
         if len(code) < 6:
             continue
 
         try:
+
             data = await load_media(code)
+
             if data:
                 all_data.extend(data)
+
         except Exception as e:
-            print(f"LOAD ERROR {code}:", e)
+
+            print(
+                f"LOAD ERROR {code}:",
+                e
+            )
 
     if not all_data:
-        return await message.answer("❌ Semua CODE tidak valid")
+
+        return await message.answer(
+            "❌ Semua CODE tidak valid"
+        )
 
     # =========================
     # SET STATE
     # =========================
+
     user_states[user_id] = {
         "mode": "view",
         "code": codes[0],
@@ -736,49 +821,87 @@ async def receive_code(message: Message):
     # =========================
     # RENDER UI
     # =========================
+
     try:
-        await render_first_page(message, user_id)
+
+        await render_first_page(
+            message,
+            user_id
+        )
+
     except Exception as e:
-        print("RENDER ERROR:", e)
-        await message.answer("❌ Error saat menampilkan file")
+
+        print(
+            "RENDER ERROR:",
+            e
+        )
+
+        await message.answer(
+            "❌ Error saat menampilkan file"
+        )
         
 # =========================
-# KB BUILDER (FIXED)
+# KB BUILDER
 # =========================
-def build_kb(user_id, page, total_pages):
 
-    history = page_history.get(user_id, set())
+def build_kb(
+    user_id,
+    page,
+    total_pages
+):
+
+    history = page_history.get(
+        user_id,
+        set()
+    )
 
     buttons = []
 
     # =========================
     # NAVIGATION
     # =========================
+
     buttons.append([
-        InlineKeyboardButton(text="⬅ Prev", callback_data="prev"),
-        InlineKeyboardButton(text="➡ Next", callback_data="next"),
+        InlineKeyboardButton(
+            text="⬅ Prev",
+            callback_data="prev"
+        ),
+        InlineKeyboardButton(
+            text="➡ Next",
+            callback_data="next"
+        )
     ])
 
     # =========================
-    # PAGE WINDOW (5 tombol dinamis)
+    # PAGE WINDOW
     # =========================
+
     page_row = []
 
     window = 5
 
-    start = max(0, page - 2)
+    start = max(
+        0,
+        page - 2
+    )
+
     end = start + window
 
     if end > total_pages:
         end = total_pages
-        start = max(0, end - window)
+        start = max(
+            0,
+            end - window
+        )
 
     for i in range(start, end):
 
         if i == page:
             emoji = "🟢"
+
         elif i in history:
             emoji = "🟡"
+
         else:
             emoji = "⚪"
 
@@ -795,6 +918,7 @@ def build_kb(user_id, page, total_pages):
     # =========================
     # FOOTER
     # =========================
+
     buttons.append([
         InlineKeyboardButton(
             text="📢 JOIN CHANNEL",
@@ -806,186 +930,355 @@ def build_kb(user_id, page, total_pages):
         )
     ])
 
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-# ==================
-# RENDER FIRST
-# ==================
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons
+    )
 
-async def render_first_page(message, user_id: int):
+
+# =========================
+# RENDER FIRST PAGE
+# =========================
+
+async def render_first_page(
+    message,
+    user_id: int
+):
 
     state = user_states.get(user_id)
+
     if not state:
-        return await message.answer("Session expired")
+        return await message.answer(
+            "Session expired"
+        )
 
     data = state.get("data", [])
+
     if not data:
-        return await message.answer("❌ Tidak ada media")
+        return await message.answer(
+            "❌ Tidak ada media"
+        )
 
     state["page"] = 0
 
-    page = 0
     page_size = 5
+    page = 0
 
     start = page * page_size
-    chunk = data[start:start + page_size]
 
-    total_pages = max(1, (len(data) + page_size - 1) // page_size)
+    chunk = data[
+        start:
+        start + page_size
+    ]
 
-    # =========================
-    # MEDIA
-    # =========================
-    await send_media(message.bot, message.chat.id, chunk)
+    total_pages = max(
+        1,
+        (len(data) + page_size - 1)
+        // page_size
+    )
 
-    # =========================
-    # CONTROL MESSAGE
-    # =========================
+    page_history[user_id] = {0}
+
+    await send_media(
+        message.bot,
+        message.chat.id,
+        chunk
+    )
+
     text = (
         f"📦 CODE: {state['code']}\n"
         f"📄 Page: {page+1}/{total_pages}\n"
         f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
     )
 
-    kb = build_kb(user_id, page, total_pages)
+    kb = build_kb(
+        user_id,
+        page,
+        total_pages
+    )
 
-    msg = await message.answer(text, reply_markup=kb)
+    msg = await message.answer(
+        text,
+        reply_markup=kb
+    )
 
     state["msg_id"] = msg.message_id
 
-# =================
-# RENDER PAGE
-# ==================
 
-async def render_page(call, user_id: int):
+# =========================
+# RENDER PAGE
+# =========================
+
+async def render_page(
+    call,
+    user_id: int
+):
 
     state = user_states.get(user_id)
-    if not state:
-        return await call.answer("Session expired")
 
-    data = state["data"]
-    page = state["page"]
+    if not state:
+        return await call.answer(
+            "Session expired"
+        )
+
+    data = state.get("data", [])
+
+    if not data:
+        return await call.answer(
+            "No data"
+        )
+
     page_size = 5
 
+    max_page = (
+        len(data) - 1
+    ) // page_size
+
+    page = max(
+        0,
+        min(
+            state.get("page", 0),
+            max_page
+        )
+    )
+
+    state["page"] = page
+
     start = page * page_size
-    chunk = data[start:start + page_size]
 
-    total_pages = max(1, (len(data) + page_size - 1) // page_size)
+    chunk = data[
+        start:
+        start + page_size
+    ]
 
-    # =========================
-    # MEDIA (kalau kamu pakai send_media, ini tetap OK)
-    # =========================
-    await send_media(call.bot, call.message.chat.id, chunk)
+    total_pages = max(
+        1,
+        (len(data) + page_size - 1)
+        // page_size
+    )
 
-    # =========================
-    # CONTROL TEXT
-    # =========================
+    await send_media(
+        call.bot,
+        call.message.chat.id,
+        chunk
+    )
+
     text = (
         f"📦 CODE: {state['code']}\n"
         f"📄 Page: {page+1}/{total_pages}\n"
         f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
     )
 
-    kb = build_kb(user_id, page, total_pages)
+    kb = build_kb(
+        user_id,
+        page,
+        total_pages
+    )
 
-    # 🔥 INI FIX UTAMA
-    await call.message.edit_text(text, reply_markup=kb)
+    try:
+
+        await call.message.edit_text(
+            text,
+            reply_markup=kb
+        )
+
+    except TelegramBadRequest:
+        pass
 
     await call.answer()
+
+
 # =========================
-# CALLBACK NEXT
+# NEXT
 # =========================
-@router.callback_query(F.data == "next")
+
+@router.callback_query(
+    F.data == "next"
+)
 async def next_page(call):
 
     user_id = call.from_user.id
-    state = user_states.get(user_id)
 
-    if not state:
-        return await call.answer("Session expired")
+    if user_click_lock.get(user_id):
+        return await call.answer()
 
-    data = state.get("data", [])
-    if not data:
-        return await call.answer("No data")
+    user_click_lock[user_id] = True
 
-    page_size = 5
-    max_page = (len(data) - 1) // page_size
+    try:
 
-    # safety
-    if state["page"] >= max_page:
-        return await call.answer("Last page")
+        state = user_states.get(user_id)
 
-    state["page"] += 1
+        if not state:
+            return await call.answer(
+                "Session expired"
+            )
 
-    # clamp safety (anti bug)
-    state["page"] = min(state["page"], max_page)
+        data = state.get("data", [])
 
-    await render_page(call, user_id)
-    
+        if not data:
+            return await call.answer(
+                "No data"
+            )
+
+        page_size = 5
+
+        max_page = (
+            len(data) - 1
+        ) // page_size
+
+        if state["page"] >= max_page:
+            return await call.answer(
+                "Last page"
+            )
+
+        state["page"] += 1
+
+        page_history.setdefault(
+            user_id,
+            set()
+        ).add(
+            state["page"]
+        )
+
+        await render_page(
+            call,
+            user_id
+        )
+
+    finally:
+
+        user_click_lock.pop(
+            user_id,
+            None
+        )
+
+
 # =========================
-# CALLBACK PREV
+# PREV
 # =========================
 
-@router.callback_query(F.data == "prev")
+@router.callback_query(
+    F.data == "prev"
+)
 async def prev_page(call):
 
     user_id = call.from_user.id
-    state = user_states.get(user_id)
 
-    if not state:
-        return await call.answer("Session expired")
+    if user_click_lock.get(user_id):
+        return await call.answer()
 
-    if state.get("page", 0) <= 0:
-        state["page"] = 0
-        return await call.answer("First page")
+    user_click_lock[user_id] = True
 
-    state["page"] -= 1
+    try:
 
-    # safety clamp
-    state["page"] = max(0, state["page"])
+        state = user_states.get(user_id)
 
-    await render_page(call, user_id)
+        if not state:
+            return await call.answer(
+                "Session expired"
+            )
+
+        if state.get("page", 0) <= 0:
+            return await call.answer(
+                "First page"
+            )
+
+        state["page"] -= 1
+
+        page_history.setdefault(
+            user_id,
+            set()
+        ).add(
+            state["page"]
+        )
+
+        await render_page(
+            call,
+            user_id
+        )
+
+    finally:
+
+        user_click_lock.pop(
+            user_id,
+            None
+        )
+
+
 # =========================
-# CALLBACK JUMP PAGE
+# GOTO PAGE
 # =========================
-@router.callback_query(F.data.startswith("page:"))
+
+@router.callback_query(
+    F.data.startswith("page:")
+)
 async def goto_page(call):
 
     user_id = call.from_user.id
-    state = user_states.get(user_id)
 
-    if not state:
-        return await call.answer("Session expired")
+    if user_click_lock.get(user_id):
+        return await call.answer()
 
-    data = state.get("data", [])
-    if not data:
-        return await call.answer("No data")
+    user_click_lock[user_id] = True
 
-    # =========================
-    # SAFE PARSE
-    # =========================
     try:
-        page = int(call.data.split(":")[1])
-    except (ValueError, IndexError):
-        return await call.answer("Invalid page")
 
-    page_size = 5
-    max_page = (len(data) - 1) // page_size
+        state = user_states.get(user_id)
 
-    # =========================
-    # CLAMP SAFETY
-    # =========================
-    page = max(0, min(page, max_page))
+        if not state:
+            return await call.answer(
+                "Session expired"
+            )
 
-    state["page"] = page
+        data = state.get("data", [])
 
-    # =========================
-    # UPDATE HISTORY (IMPORTANT)
-    # =========================
-    if "page_history" not in globals():
-        page_history[user_id] = set()
+        if not data:
+            return await call.answer(
+                "No data"
+            )
 
-    page_history[user_id].add(page)
+        try:
 
-    await render_page(call, user_id)
+            page = int(
+                call.data.split(":")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+            return await call.answer(
+                "Invalid page"
+            )
+
+        page_size = 5
+
+        max_page = (
+            len(data) - 1
+        ) // page_size
+
+        page = max(
+            0,
+            min(page, max_page)
+        )
+
+        state["page"] = page
+
+        page_history.setdefault(
+            user_id,
+            set()
+        ).add(page)
+
+        await render_page(
+            call,
+            user_id
+        )
+
+    finally:
+
+        user_click_lock.pop(
+            user_id,
+            None
+        )
 # ======================
 # ADD USER FUNCTION
 # =========================
