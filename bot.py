@@ -9,6 +9,7 @@ import string
 import asyncpg
 import time
 import asyncio
+import random
 
 from dotenv import load_dotenv
 
@@ -115,8 +116,7 @@ user_last_action = {}
 GLOBAL_DELAY = 0.05
 last_global_send = 0
 
-USER_DELAY = 2
-user_last_action = {}
+USER_DELAY = 1.5
 
 def user_limit(user_id):
     now = time.time()
@@ -465,7 +465,7 @@ async def handle_media(message: Message):
     # THROTTLE
     # =========================
     now = time.time()
-    if now - last_edit_time.get(user_id, 0) < 1:
+    if now - last_edit_time.get(user_id, 0) < 1.5:
         return
     last_edit_time[user_id] = now
 
@@ -1339,7 +1339,7 @@ async def broadcast_cmd(message: Message):
         if i % 20 == 0:
             await asyncio.sleep(1.2)  # heavy pause
         else:
-            await asyncio.sleep(0.04)  # normal delay
+            await asyncio.sleep(0.06)  # normal delay
 
         # =========================
         # UPDATE PROGRESS (SETIAP 25 USER)
