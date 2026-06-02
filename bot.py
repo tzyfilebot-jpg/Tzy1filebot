@@ -230,7 +230,7 @@ def force_kb(channel):
         ]
     )
 # =========================
-# UP FILE INIT
+# UP FILE INIT (FIXED)
 # =========================
 
 def upload_kb():
@@ -267,7 +267,9 @@ async def up_file(message: Message):
         "photo": 0,
         "document": 0,
         "items": [],
-        "msg_id": None
+        "total_size": 0,   # 🔥 FIX: incremental size
+        "msg_id": None,
+        "chat_id": message.chat.id
     }
 
     msg = await message.answer(
@@ -282,7 +284,7 @@ async def up_file(message: Message):
 
 
 # =========================
-# MEDIA HANDLER
+# MEDIA HANDLER (FIXED)
 # =========================
 
 @router.message(F.photo | F.video | F.document)
@@ -293,6 +295,9 @@ async def handle_media(message: Message):
     state = user_states.get(user_id)
     session = upload_sessions.get(user_id)
 
+    # =========================
+    # VALIDATION MODE
+    # =========================
     if not state or state.get("mode") != "upload":
         return
 
@@ -302,29 +307,25 @@ async def handle_media(message: Message):
     # =========================
     # GET FILE DATA
     # =========================
+    file_obj = None
+    file_type = None
 
     if message.photo:
-
         file_obj = message.photo[-1]
         file_type = "photo"
-
         session["photo"] = session.get("photo", 0) + 1
 
     elif message.video:
-
         file_obj = message.video
         file_type = "video"
-
         session["video"] = session.get("video", 0) + 1
 
     elif message.document:
-
         file_obj = message.document
         file_type = "document"
-
         session["document"] = session.get("document", 0) + 1
 
-    else:
+    if not file_obj:
         return
 
     file_id = file_obj.file_id
@@ -333,20 +334,17 @@ async def handle_media(message: Message):
     # =========================
     # LIMIT FILE COUNT
     # =========================
-
-    if len(session["items"]) >= MAX_UPLOAD_FILES:
-
+    if len(session.get("items", [])) >= MAX_UPLOAD_FILES:
         return await message.answer(
             f"❌ Maksimal {MAX_UPLOAD_FILES} file per upload."
         )
 
-    current_size = sum(
-        x["size"]
-        for x in session["items"]
-    )
+    # =========================
+    # LIMIT SIZE (SAFE)
+    # =========================
+    current_size = session.get("total_size", 0)
 
     if current_size + size > MAX_UPLOAD_SIZE:
-
         return await message.answer(
             "❌ Total upload melebihi batas ukuran."
         )
@@ -354,29 +352,30 @@ async def handle_media(message: Message):
     # =========================
     # SAVE SESSION
     # =========================
-
-    session["items"].append({
+    session.setdefault("items", []).append({
         "file_id": file_id,
         "type": file_type,
         "size": size
     })
 
-    # =========================
-    # DELETE USER MESSAGE
-    # =========================
+    session["total_size"] = current_size + size
 
+    # =========================
+    # DELETE USER MESSAGE (SAFE)
+    # =========================
     try:
         await message.delete()
     except Exception:
         pass
 
     # =========================
-    # THROTTLE EDIT
+    # THROTTLE EDIT (ANTI SPAM SAFE)
     # =========================
-
     now = time.time()
 
-    if now - last_edit_time.get(user_id, 0) < 0.9:
+    last_time = last_edit_time.get(user_id, 0)
+
+    if now - last_time < 0.5:
         return
 
     last_edit_time[user_id] = now
@@ -384,14 +383,9 @@ async def handle_media(message: Message):
     # =========================
     # STATS
     # =========================
-
     total = len(session["items"])
 
-    size_mb = round(
-        sum(x["size"] for x in session["items"])
-        / (1024 * 1024),
-        2
-    )
+    size_mb = round(session["total_size"] / (1024 * 1024), 2)
 
     text = (
         "📤 UPLOADING...\n\n"
@@ -402,10 +396,12 @@ async def handle_media(message: Message):
         f"💾 Size      : {size_mb} MB"
     )
 
+    # =========================
+    # EDIT MESSAGE (SAFE + RETRY)
+    # =========================
     try:
-
         await message.bot.edit_message_text(
-            chat_id=user_id,
+            chat_id=session["chat_id"],
             message_id=session["msg_id"],
             text=text,
             reply_markup=upload_kb()
@@ -414,28 +410,21 @@ async def handle_media(message: Message):
     except TelegramBadRequest:
         pass
 
-
+    except Exception:
+        pass
 # =========================
-# GENERATE CODE
+# GENERATE CODE (OK)
 # =========================
 
 def generate_code(v, p, d):
 
     import hashlib
 
-    base = (
-        f"{v}"
-        f"{p}"
-        f"{d}"
-        f"{secrets.token_hex(4)}"
-    )
+    base = f"{v}{p}{d}{secrets.token_hex(4)}"
 
-    rand = hashlib.sha1(
-        base.encode()
-    ).hexdigest()[:12]
+    rand = hashlib.sha1(base.encode()).hexdigest()[:12]
 
     return f"tzy_{v}v_{p}p_{d}d_{rand}"
-
 
 # =========================
 # DONE
@@ -1580,7 +1569,7 @@ async def broadcast_cmd(message: Message):
         )
 
     # =========================
-    # GET MESSAGE TEXT
+    # PARSE MESSAGE
     # =========================
     text = message.text.replace("/broadcast", "").strip()
 
@@ -1596,27 +1585,27 @@ async def broadcast_cmd(message: Message):
     # =========================
     try:
         async with db_pool.acquire() as conn:
-            users = await conn.fetch(
-                "SELECT user_id FROM users"
-            )
+            users = await conn.fetch("SELECT user_id FROM users")
     except Exception:
         return await message.answer(
             "⚠️ DATABASE ERROR\n\n"
             "😏 Gagal ambil user list."
         )
 
-    # =========================
-    # BROADCAST LOOP
-    # =========================
+    total = len(users)
     sent = 0
     failed = 0
 
     await message.answer(
-        "📡 BROADCAST STARTED...\n"
-        "💀 Jangan ganggu sistem..."
+        f"📡 BROADCAST STARTED...\n"
+        f"👥 Target: {total}\n"
+        "💀 Sistem mulai bekerja..."
     )
 
-    for user in users:
+    # =========================
+    # BROADCAST LOOP (SAFE MODE)
+    # =========================
+    for i, user in enumerate(users, start=1):
 
         try:
             await message.bot.send_message(
@@ -1626,12 +1615,17 @@ async def broadcast_cmd(message: Message):
 
             sent += 1
 
-            # anti flood Telegram
-            await asyncio.sleep(0.01)
-
         except Exception:
             failed += 1
-            continue
+
+        # =========================
+        # ANTI FLOOD CONTROL
+        # =========================
+        if i % 20 == 0:
+            await asyncio.sleep(0.5)
+
+        else:
+            await asyncio.sleep(0.03)
 
     # =========================
     # RESULT
@@ -1639,11 +1633,11 @@ async def broadcast_cmd(message: Message):
     await message.answer(
         "📡 BROADCAST FINISHED\n\n"
         "━━━━━━━━━━━━━━\n"
+        f"👥 Total  : {total}\n"
         f"📤 Sent   : {sent}\n"
         f"❌ Failed : {failed}\n"
         "━━━━━━━━━━━━━━\n\n"
-        "💀 Semua user sudah kena pesan.\n"
-        "😏 Tinggal tunggu reaksi dunia."
+        "💀 Done sending to all users."
     )
 # =========================
 # HELP TEXT
