@@ -51,7 +51,14 @@ last_edit = {}
 
 async def init_db():
     global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
+
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        statement_cache_size=0,   # 🔥 FIX ERROR KAMU
+        command_timeout=60
+    )
 
     async with db_pool.acquire() as c:
         await c.execute("""
@@ -69,14 +76,13 @@ async def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS medias(
-            id SERIAL,
+            id SERIAL PRIMARY KEY,
             code TEXT,
             file_id TEXT,
             file_type TEXT,
             file_size BIGINT
         );
         """)
-
 # =========================
 # UTIL
 # =========================
