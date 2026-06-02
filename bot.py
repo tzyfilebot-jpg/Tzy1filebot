@@ -307,6 +307,17 @@ async def cancel(c: CallbackQuery):
     user_mode.pop(c.from_user.id, None)
     await c.message.edit_text("❌ CANCELLED. yaudah santai aja.")
 
+from aiogram.types import (
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaDocument,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
+
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").replace("@", "")
+UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "").replace("@", "")
+
 # =========================
 # GET MODE
 # =========================
@@ -317,43 +328,58 @@ async def get_mode(m: Message):
     await m.answer("📥 KIRIM CODE SEKARANG")
 
 # =========================
-# GET FILE (FIXED SAFE)
+# GET FILE (FIXED FULL SAFE)
 # =========================
 
-@router.message(F.text & ~F.command)
+@router.message(lambda m: user_mode.get(m.from_user.id) == "get")
 async def get_file(m: Message):
     uid = m.from_user.id
-
-    if user_mode.get(uid) != "get":
-        return
-
-    code = m.text.strip()
+    code = (m.text or "").strip()
 
     async with db_pool.acquire() as c:
-        rows = await c.fetch("SELECT * FROM medias WHERE code=$1", code)
+        rows = await c.fetch(
+            "SELECT file_id, file_type FROM medias WHERE code=$1",
+            code
+        )
 
     if not rows:
-        return await m.answer(SAVAGE["invalid"])
+        return await m.answer("❌ CODE TIDAK VALID")
 
     media = []
 
     for r in rows[:10]:
         if r["file_type"] == "photo":
-            media.append(InputMediaPhoto(r["file_id"]))
+            media.append(InputMediaPhoto(media=r["file_id"]))
         elif r["file_type"] == "video":
-            media.append(InputMediaVideo(r["file_id"]))
+            media.append(InputMediaVideo(media=r["file_id"]))
         else:
-            media.append(InputMediaDocument(r["file_id"]))
+            media.append(InputMediaDocument(media=r["file_id"]))
 
-    await m.bot.send_media_group(m.chat.id, media)
+    await m.bot.send_media_group(chat_id=m.chat.id, media=media)
+
+    bot_link = f"https://t.me/{BOT_USERNAME}"
+    update_link = f"https://t.me/{UPDATE_CHANNEL}"
+
+    caption = (
+        f"🔓 <b>CODE:</b> <code>{code}</code>\n\n"
+        f"Media sudah dibuka oleh <a href='{bot_link}'>BOT</a>\n\n"
+        f"📢 Join update channel: <a href='{update_link}'>UPDATE</a>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔔 Notifikasi Bot", url=bot_link),
+            InlineKeyboardButton(text="💬 New Group Chat", url=update_link)
+        ]
+    ])
 
     await m.answer(
-        f"🔓 CODE: {code}\n"
-        "😏 Udah kebuka, jangan disalahgunakan ya.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 UPDATE", url=f"https://t.me/{UPDATE_CHANNEL.replace('@','')}")]
-        ])
+        caption,
+        parse_mode="HTML",
+        reply_markup=kb
     )
+
+    user_mode.pop(uid, None)
 
 # =========================
 # ACCOUNT
