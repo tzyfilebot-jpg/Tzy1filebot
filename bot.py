@@ -18,7 +18,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-
+from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramRetryAfter,
@@ -1612,7 +1612,7 @@ async def broadcast_cmd(message: Message):
             sent += 1
 
             # anti flood Telegram
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
         except Exception:
             failed += 1
@@ -1704,19 +1704,6 @@ Menampilkan:
 ❌ Abuse system
 
 ━━━━━━━━━━━━━━
-🛠 ADMIN COMMAND
-━━━━━━━━━━━━━━
-
-/stat
-→ statistik bot
-
-/broadcast pesan
-→ broadcast user
-
-/addadmin ID
-→ tambah admin
-
-━━━━━━━━━━━━━━
 ⚠ COMMON ERROR
 ━━━━━━━━━━━━━━
 
@@ -1767,30 +1754,28 @@ async def help_button(message: Message):
 # =========================
 
 async def main():
-
-    bot = Bot(
-        token=BOT_TOKEN
-    )
-
+    bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    dp.include_router(
-        router
-    )
-
-    await init_db()
+    dp.include_router(router)
 
     try:
+        # init database dulu
+        await init_db()
 
-        await dp.start_polling(
-            bot
-        )
+        # start bot
+        await dp.start_polling(bot)
+
+    except Exception as e:
+        print("BOT ERROR:", e)
 
     finally:
+        # cleanup aman
+        global db_pool
 
-        if db_pool:
-
+        if db_pool is not None:
             await db_pool.close()
+            db_pool = None
 
         await bot.session.close()
 
