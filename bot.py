@@ -931,7 +931,7 @@ async def receive_code(message: Message):
 
     await message.answer(f"📦 Ditemukan {len(all_data)} file")
 
-    # 🔥 FINAL CLEAN CALL (NO FAKE CALL)
+    # 🔥 RENDER FINAL (SUDAH BENAR)
     await render_page(user_id, message.bot, message.chat.id)
 # ======================
 # ADD USER FUNCTION
