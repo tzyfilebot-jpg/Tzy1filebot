@@ -113,7 +113,7 @@ user_last_action = {}
 # ANTI BANNED SYSTEM 🔥
 # =========================
 
-GLOBAL_DELAY = 0.05
+GLOBAL_DELAY = 0.08
 last_global_send = 0
 
 USER_DELAY = 1.5
@@ -664,7 +664,7 @@ async def cancel(call: CallbackQuery):
 # =========================
 # GLOBAL
 # =========================
-page_history = {}
+
 COOLDOWN_TIME = 5
 
 # =========================
@@ -734,28 +734,43 @@ async def send_media(bot, chat_id: int, chunk: list):
 
     for m in chunk[:5]:
         fid = m.get("file_id")
-        t = m.get("file_type")
+        t = (m.get("file_type") or "").lower()
 
         if not fid:
             continue
 
-        if t == "photo":
-            media.append(InputMediaPhoto(media=fid))
-        elif t == "video":
-            media.append(InputMediaVideo(media=fid))
-        else:
-            media.append(InputMediaDocument(media=fid))
+        try:
+            if t == "photo":
+                media.append(InputMediaPhoto(media=fid))
+            elif t == "video":
+                media.append(InputMediaVideo(media=fid))
+            else:
+                media.append(InputMediaDocument(media=fid))
+        except Exception as e:
+            print("MEDIA BUILD ERROR:", e)
+            continue
 
     if not media:
         return
 
-    try:
-        await bot.send_media_group(chat_id, media)
-        await asyncio.sleep(0.3 + random.uniform(0.1, 0.4))
-    except Exception as e:
-        print("SEND ERROR:", e)
+    # 🔥 RETRY SYSTEM (ANTI FLOOD SAFE)
+    for attempt in range(3):
+        try:
+            await bot.send_media_group(chat_id, media)
 
+            await asyncio.sleep(0.5 + random.uniform(0.2, 0.8))
+            return
 
+        except Exception as e:
+            err = str(e).lower()
+            print(f"SEND MEDIA ERROR {attempt+1}:", e)
+
+            if "retry after" in err:
+                await asyncio.sleep(3 + attempt * 2)
+            else:
+                await asyncio.sleep(1.5 + attempt)
+
+    print("❌ GAGAL KIRIM MEDIA SETELAH 3X RETRY")
 # =========================
 # KEYBOARD
 # =========================
