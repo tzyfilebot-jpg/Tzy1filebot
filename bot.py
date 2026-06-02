@@ -2,7 +2,6 @@ import os
 import asyncio
 import secrets
 import asyncpg
-import time
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router, F
@@ -22,7 +21,6 @@ from aiogram.exceptions import TelegramBadRequest
 # =========================
 # LOAD ENV
 # =========================
-
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -32,12 +30,17 @@ FORCE_CHANNEL = os.getenv("FORCE_CHANNEL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").replace("@", "")
 
-ADMINS = {int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()}
+ADMINS = {
+    int(x) for x in os.getenv("ADMINS", "").split(",")
+    if x.strip().isdigit()
+}
+
+if not BOT_TOKEN or not DATABASE_URL:
+    raise RuntimeError("BOT_TOKEN / DATABASE_URL belum diisi di .env")
 
 # =========================
 # INIT
 # =========================
-
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
@@ -51,7 +54,6 @@ user_mode = {}
 # =========================
 # DB INIT
 # =========================
-
 async def init_db():
     global db_pool
 
@@ -90,14 +92,12 @@ async def init_db():
 # =========================
 # UTIL
 # =========================
-
 def gen_code():
     return "CODE_" + secrets.token_hex(4)
 
 # =========================
 # KEYBOARD
 # =========================
-
 def menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -118,7 +118,6 @@ def upload_kb():
 # =========================
 # START
 # =========================
-
 @router.message(F.text == "/start")
 async def start(m: Message):
     await m.answer("🔥 MENU READY", reply_markup=menu())
@@ -126,7 +125,6 @@ async def start(m: Message):
 # =========================
 # UPLOAD MODE
 # =========================
-
 @router.message(F.text == "📤 Up File")
 async def up(m: Message):
     uid = m.from_user.id
@@ -140,17 +138,12 @@ async def up(m: Message):
 
     user_mode[uid] = "upload"
 
-    msg = await m.answer(
-        "📤 UPLOAD MODE",
-        reply_markup=upload_kb()
-    )
-
+    msg = await m.answer("📤 UPLOAD MODE", reply_markup=upload_kb())
     upload_sessions[uid]["msg_id"] = msg.message_id
 
 # =========================
 # MEDIA HANDLER
 # =========================
-
 @router.message(F.photo | F.video | F.document)
 async def media(m: Message):
     uid = m.from_user.id
@@ -172,16 +165,20 @@ async def media(m: Message):
     else:
         f, t = m.document, "doc"
 
+    size = f.file_size or 0
+
     s["items"].append({
         "file_id": f.file_id,
         "type": t,
-        "size": f.file_size or 0
+        "size": size
     })
+
+    # FIX: size sebelumnya selalu 0
+    s["size"] += size
 
 # =========================
 # DONE
 # =========================
-
 @router.callback_query(F.data == "done")
 async def done(c: CallbackQuery):
     uid = c.from_user.id
@@ -212,7 +209,6 @@ async def done(c: CallbackQuery):
 # =========================
 # CANCEL
 # =========================
-
 @router.callback_query(F.data == "cancel")
 async def cancel(c: CallbackQuery):
     upload_sessions.pop(c.from_user.id, None)
@@ -222,16 +218,14 @@ async def cancel(c: CallbackQuery):
 # =========================
 # GET MODE
 # =========================
-
 @router.message(F.text == "📥 Get File")
 async def get_mode(m: Message):
     user_mode[m.from_user.id] = "get"
     await m.answer("KIRIM CODE")
 
 # =========================
-# GET FILE (FIX FINAL CLEAN)
+# GET FILE
 # =========================
-
 @router.message()
 async def get_file(m: Message):
     uid = m.from_user.id
@@ -260,15 +254,17 @@ async def get_file(m: Message):
         else:
             media.append(InputMediaDocument(r["file_id"]))
 
-    await m.bot.send_media_group(chat_id=m.chat.id, media=media)
+    try:
+        await m.bot.send_media_group(chat_id=m.chat.id, media=media)
+    except TelegramBadRequest:
+        return await m.answer("GAGAL KIRIM MEDIA")
 
     bot_link = f"https://t.me/{BOT_USERNAME}"
     update_link = f"https://t.me/{UPDATE_CHANNEL}"
 
     caption = (
         f"🔓 CODE: {code}\n\n"
-        f"Media sudah dibuka oleh <a href='{bot_link}'>BOT</a>\n\n"
-        f"UPDATE: <a href='{update_link}'>CHANNEL</a>"
+        f"Media dibuka via BOT\n"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -278,30 +274,30 @@ async def get_file(m: Message):
         ]
     ])
 
-    await m.answer(caption, parse_mode="HTML", reply_markup=kb)
+    await m.answer(caption, reply_markup=kb)
 
     user_mode.pop(uid, None)
 
 # =========================
-# ACCOUNT
+# ACCOUNT (FIXED)
 # =========================
-
 @router.message(F.text == "👤 Account")
 async def account(m: Message):
-    await m.answer("ACCOUNT OK")
+    await m.answer(
+        f"👤 USER ID: {m.from_user.id}\n"
+        f"USERNAME: @{m.from_user.username or 'none'}"
+    )
 
 # =========================
-# HELP
+# HELP (FIXED NAME)
 # =========================
-
 @router.message(F.text == "❓ Help")
-async def help(m: Message):
-    await m.answer("UP / GET / DONE")
+async def help_cmd(m: Message):
+    await m.answer("📤 Up File\n📥 Get File\n👤 Account")
 
 # =========================
 # MAIN
 # =========================
-
 async def main():
     await init_db()
     dp.include_router(router)
