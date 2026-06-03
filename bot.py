@@ -45,9 +45,9 @@ ADMINS = set(
     if x.strip().isdigit()
 )
 
-FORCE_CHANNEL = int(os.getenv("FORCE_CHANNEL")
+FORCE_CHANNEL = int(os.getenv("FORCE_CHANNEL"))
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL")
-NOTIFICATION_CHANNEL = int(os.getenv("NOTIFICATION_CHANNEL")
+NOTIFICATION_CHANNEL = int(os.getenv("NOTIFICATION_CHANNEL"))
 VIP_LINK = os.getenv("VIP_LINK")
 
 # =========================
