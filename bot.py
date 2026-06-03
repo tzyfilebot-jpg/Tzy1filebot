@@ -495,7 +495,7 @@ def generate_code(v, p, d):
     base = f"{v}{p}{d}{secrets.token_hex(4)}"
     rand = hashlib.sha1(base.encode()).hexdigest()[:12]
 
-    return f"tzy_{v}v_{p}p_{d}d_{rand}"
+    return f"xywukai_{v}v_{p}p_{d}d_{rand}"
 
 
 # =========================
@@ -882,7 +882,7 @@ async def pagination(call: CallbackQuery):
     page = max(0, min(page, max_page))
     state["page"] = page
 
-    await render_page(call, user_id)
+    await render_page(user_id, call.bot, call.message.chat.id)
 
 
 # =========================
@@ -920,7 +920,7 @@ async def receive_code(message: Message):
     if is_cooldown(user_id):
         return await message.answer("⏳ Jangan spam")
 
-    codes = re.findall(r"\btzy_[A-Za-z0-9_]+\b", message.text or "")
+    codes = re.findall(r"\bxywukai_[A-Za-z0-9_]+\b", message.text or "")
 
     if not codes:
         return await message.answer("❌ CODE salah")
@@ -1327,7 +1327,7 @@ async def broadcast_cmd(message: Message):
         if i % 20 == 0:
             await asyncio.sleep(1.2)  # heavy pause
         else:
-            await asyncio.sleep(0.05 - 0.3)  # normal delay
+            await asyncio.sleep(random.uniform(0.03, 0.1))  # normal delay
 
         # =========================
         # UPDATE PROGRESS (SETIAP 25 USER)
