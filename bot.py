@@ -180,15 +180,22 @@ def get_keyboard():
     )
 
 # =========================
-# FORCE SUB (SAFE + CLEAN)
+# CHECK FORCE SUB (FIXED)
 # =========================
-
-async def check_force_sub(bot: Bot, user_id: int, channel: str):
+async def check_force_sub(bot: Bot, user_id: int, channel):
     try:
-        ch = channel.replace("@", "").strip()
+        # =========================
+        # SUPPORT 2 FORMAT:
+        # - int (-100xxx) private channel
+        # - string (@username) public channel
+        # =========================
+        if isinstance(channel, int):
+            chat_id = channel
+        else:
+            chat_id = f"@{channel.replace('@', '').strip()}"
 
         member = await bot.get_chat_member(
-            chat_id=f"@{ch}",
+            chat_id=chat_id,
             user_id=user_id
         )
 
@@ -199,15 +206,26 @@ async def check_force_sub(bot: Bot, user_id: int, channel: str):
         return False
 
 
+# =========================
+# FORCE SUB KEYBOARD (FIXED)
+# =========================
 def force_kb(channel):
-    ch = channel.replace("@", "").strip()
+    # =========================
+    # INT = PRIVATE CHANNEL
+    # STRING = PUBLIC CHANNEL
+    # =========================
+    if isinstance(channel, int):
+        # convert -100xxxxxxxxxx → t.me/c/xxxxxxxxxx
+        link = f"https://t.me/c/{str(channel)[4:]}"
+    else:
+        link = f"https://t.me/{channel.replace('@', '').strip()}"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="📢 Join Channel",
-                    url=f"https://t.me/{ch}"
+                    url=link
                 )
             ],
             [
@@ -218,7 +236,6 @@ def force_kb(channel):
             ]
         ]
     )
-
 # =========================
 # START (ANTI BANNED VERSION)
 # =========================
