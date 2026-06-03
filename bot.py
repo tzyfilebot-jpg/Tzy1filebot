@@ -108,6 +108,10 @@ upload_sessions = {}
 user_states = {}
 last_edit_time = {}
 user_last_action = {}
+force_cache = {}
+
+# key = (user_id, channel)
+# value = (status, expire_time)
 
 # =========================
 # ANTI BANNED SYSTEM 🔥
@@ -1323,7 +1327,7 @@ async def broadcast_cmd(message: Message):
         if i % 20 == 0:
             await asyncio.sleep(1.2)  # heavy pause
         else:
-            await asyncio.sleep(0.06)  # normal delay
+            await asyncio.sleep(0.05 - 0.3)  # normal delay
 
         # =========================
         # UPDATE PROGRESS (SETIAP 25 USER)
