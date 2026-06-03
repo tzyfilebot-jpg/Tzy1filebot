@@ -1047,17 +1047,12 @@ async def account_cmd(message: Message):
 # =========================
 def vip_kb():
 
-    if not VIP_LINK:
-        return None
-
-    link = VIP_LINK.replace("https://t.me/", "").replace("@", "").strip()
-
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🚀 JOIN VIP CHANNEL",
-                    url=f"https://t.me/{link}"
+                    text="💬 CHAT ADMIN VIP",
+                    url="https://t.me/penngewe"
                 )
             ],
             [
@@ -1068,8 +1063,6 @@ def vip_kb():
             ]
         ]
     )
-
-
 # =========================
 # VIP COMMAND
 # =========================
