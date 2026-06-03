@@ -498,10 +498,6 @@ def generate_code(v, p, d):
     return f"xywukai_{v}v_{p}p_{d}d_{rand}"
 
 
-# =========================
-# DONE HANDLER
-# =========================
-
 @router.callback_query(F.data == "upload_done")
 async def done(call: CallbackQuery):
 
@@ -514,18 +510,23 @@ async def done(call: CallbackQuery):
             show_alert=True
         )
 
-    code = generate_code(
-        s.get("video", 0),
-        s.get("photo", 0),
-        s.get("document", 0)
-    )
-
-    total_items = len(s["items"])
-    total_size = sum(x.get("size", 0) for x in s["items"])
-
-    saved_items = []
+    # 🔥 ANTI DOUBLE CLICK / RACE CONDITION
+    if s.get("processing"):
+        return await call.answer("⏳ Lagi diproses...")
+    s["processing"] = True
 
     try:
+        code = generate_code(
+            s.get("video", 0),
+            s.get("photo", 0),
+            s.get("document", 0)
+        )
+
+        total_items = len(s["items"])
+        total_size = sum(x.get("size", 0) for x in s["items"])
+
+        saved_items = []
+
         async with db_pool.acquire() as conn:
 
             # =========================
@@ -598,23 +599,9 @@ async def done(call: CallbackQuery):
                     saved_items
                 )
 
-    except Exception as e:
-        print("DB ERROR:", e)
-        return await call.message.edit_text(
-            "❌ Gagal menyimpan file, coba lagi nanti"
-        )
-
-    # =========================
-    # CLEAN SESSION
-    # =========================
-    upload_sessions.pop(user_id, None)
-    user_states.pop(user_id, None)
-    last_edit_time.pop(user_id, None)
-
-    # =========================
-    # FINAL RESPONSE
-    # =========================
-    try:
+        # =========================
+        # FINAL RESPONSE
+        # =========================
         await call.message.edit_text(
             "💀 UPLOAD COMPLETE\n\n"
             f"😏 CODE: <code>{code}</code>\n\n"
@@ -624,10 +611,19 @@ async def done(call: CallbackQuery):
             "🤖 Bot: tzyfilerobot",
             parse_mode="HTML"
         )
+
     except Exception as e:
-        print("FINAL EDIT ERROR:", e)
+        print("DONE ERROR:", e)
+        await call.message.edit_text("❌ Gagal proses upload")
 
-
+    finally:
+        # =========================
+        # CLEAN SESSION (WAJIB AMAN)
+        # =========================
+        upload_sessions.pop(user_id, None)
+        user_states.pop(user_id, None)
+        last_edit_time.pop(user_id, None)
+        
 # =========================
 # CANCEL HANDLER
 # =========================
