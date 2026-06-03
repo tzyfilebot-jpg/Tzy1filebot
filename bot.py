@@ -63,7 +63,7 @@ async def init_db():
         DATABASE_URL,
 
         # =========================
-        # CONNECTION POOL (STABLE)
+        # POOL SETTINGS
         # =========================
         min_size=2,
         max_size=5,
@@ -72,19 +72,11 @@ async def init_db():
         # PGBOUNCER FIX (WAJIB)
         # =========================
         statement_cache_size=0,
-        prepare_threshold=0,
 
         # =========================
-        # PERFORMANCE
+        # TIMEOUT
         # =========================
-        command_timeout=15,
-
-        # =========================
-        # SERVER SETTINGS (OPTIONAL STABILITY)
-        # =========================
-        server_settings={
-            "jit": "off"
-        }
+        command_timeout=15
     )
 
     async with db_pool.acquire() as conn:
