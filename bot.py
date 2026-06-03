@@ -195,26 +195,34 @@ def get_keyboard():
     )
 
 # =========================
-# CHECK FORCE SUB (FIXED)
+# CONFIG FORCE SUB
 # =========================
+
+# PRIVATE CHANNEL
+FORCE_CHANNEL = -1003712587847
+FORCE_CHANNEL_LINK = "https://t.me/+3g_yhHwxCrc5ZTg9"
+
+# PUBLIC CHANNEL
+# FORCE_CHANNEL = "@mychannel"
+# FORCE_CHANNEL_LINK = "https://t.me/mychannel"
+
+
+# =========================
+# CHECK FORCE SUB
+# =========================
+
 async def check_force_sub(bot: Bot, user_id: int, channel):
     try:
-        # =========================
-        # SUPPORT 2 FORMAT:
-        # - int (-100xxx) private channel
-        # - string (@username) public channel
-        # =========================
-        if isinstance(channel, int):
-            chat_id = channel
-        else:
-            chat_id = f"@{channel.replace('@', '').strip()}"
-
         member = await bot.get_chat_member(
-            chat_id=chat_id,
+            chat_id=channel,
             user_id=user_id
         )
 
-        return member.status in ("member", "administrator", "creator")
+        return member.status in (
+            "member",
+            "administrator",
+            "creator"
+        )
 
     except Exception as e:
         print("FORCE SUB ERROR:", e)
@@ -222,25 +230,16 @@ async def check_force_sub(bot: Bot, user_id: int, channel):
 
 
 # =========================
-# FORCE SUB KEYBOARD (FIXED)
+# FORCE SUB KEYBOARD
 # =========================
-def force_kb(channel):
-    # =========================
-    # INT = PRIVATE CHANNEL
-    # STRING = PUBLIC CHANNEL
-    # =========================
-    if isinstance(channel, int):
-        # convert -100xxxxxxxxxx → t.me/c/xxxxxxxxxx
-        link = f"https://t.me/c/{str(channel)[4:]}"
-    else:
-        link = f"https://t.me/{channel.replace('@', '').strip()}"
 
+def force_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="📢 Join Channel",
-                    url=link
+                    url=FORCE_CHANNEL_LINK
                 )
             ],
             [
@@ -251,18 +250,18 @@ def force_kb(channel):
             ]
         ]
     )
+
+
 # =========================
-# START (ANTI BANNED VERSION)
+# START
 # =========================
 
-@router.message(F.text == "/start")
+@router.message(CommandStart())
 async def start(message: Message, bot: Bot):
 
     user = message.from_user
 
-    # =========================
-    # SAVE USER (HARUS DI AWAL)
-    # =========================
+    # SAVE USER
     try:
         await add_user(
             user.id,
@@ -272,33 +271,32 @@ async def start(message: Message, bot: Bot):
     except Exception as e:
         print("ADD USER ERROR:", e)
 
-    # =========================
-    # ANTI SPAM USER
-    # =========================
+    # ANTI SPAM
     if not user_limit(user.id):
         return await safe_send(
             message.answer,
             "⏳ Jangan spam ya 😏"
         )
 
-    # =========================
-    # FORCE SUB CHECK
-    # =========================
+    # FORCE SUB
     if FORCE_CHANNEL:
-        ok = await check_force_sub(bot, user.id, FORCE_CHANNEL)
 
-        if not ok:
+        joined = await check_force_sub(
+            bot,
+            user.id,
+            FORCE_CHANNEL
+        )
+
+        if not joined:
             return await safe_send(
                 message.answer,
                 "⚠️ AKSES DITOLAK\n\n"
                 "😏 Kamu belum join channel.\n"
                 "Join dulu baru bisa lanjut.",
-                reply_markup=force_kb(FORCE_CHANNEL)
+                reply_markup=force_kb()
             )
 
-    # =========================
-    # RESPONSE
-    # =========================
+    # MENU
     await safe_send(
         message.answer,
         "🔥 BOT ONLINE\n\n"
@@ -316,8 +314,9 @@ async def start(message: Message, bot: Bot):
         reply_markup=get_keyboard()
     )
 
+
 # =========================
-# CHECK SUB (ANTI SPAM + SAFE EDIT)
+# CHECK SUB
 # =========================
 
 @router.callback_query(F.data == "check_sub")
@@ -325,27 +324,40 @@ async def check_sub(call: CallbackQuery, bot: Bot):
 
     user_id = call.from_user.id
 
-    # 🔥 ANTI SPAM
+    # ANTI SPAM
     if not user_limit(user_id):
-        return await call.answer("⏳ Jangan spam", show_alert=True)
+        return await call.answer(
+            "⏳ Jangan spam",
+            show_alert=True
+        )
 
+    # FORCE SUB OFF
     if not FORCE_CHANNEL:
-        return await call.answer("Force sub OFF", show_alert=True)
+        return await call.answer(
+            "Force Sub OFF",
+            show_alert=True
+        )
 
-    ok = await check_force_sub(bot, user_id, FORCE_CHANNEL)
+    # CHECK MEMBER
+    joined = await check_force_sub(
+        bot,
+        user_id,
+        FORCE_CHANNEL
+    )
 
-    if not ok:
+    if not joined:
         return await call.answer(
             "❌ Kamu belum join channel",
             show_alert=True
         )
 
-    # =========================
-    # SUCCESS
-    # =========================
+    # VERIFIED
     try:
-        await call.message.edit_text("✅ VERIFIED")
-    except:
+        await call.message.edit_text(
+            "✅ VERIFIED\n\n"
+            "Akses berhasil dibuka."
+        )
+    except Exception:
         pass
 
     await safe_send(
@@ -355,7 +367,9 @@ async def check_sub(call: CallbackQuery, bot: Bot):
         reply_markup=get_keyboard()
     )
 
-    await call.answer()
+    await call.answer(
+        "Berhasil diverifikasi ✅"
+    )
 # =========================
 # UP FILE INIT
 # =========================
