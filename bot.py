@@ -806,7 +806,9 @@ def build_kb(user_id, page, total_pages):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 # =========================
 # RENDER PAGE (CORE)
-# =========================async def render_page(user_id: int, bot, chat_id: int):
+# =========================
+    
+async def render_page(user_id: int, bot, chat_id: int):
     state = user_states.get(user_id)
 
     if not state:
