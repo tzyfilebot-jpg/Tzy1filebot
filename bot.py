@@ -404,6 +404,9 @@ async def handle_media(message: Message):
     state = user_states.get(user_id)
     s = upload_sessions.get(user_id)
 
+    # =========================
+    # VALIDATION
+    # =========================
     if not state or state.get("mode") != "upload":
         return
 
@@ -413,29 +416,38 @@ async def handle_media(message: Message):
     # =========================
     # GET FILE
     # =========================
+    file_obj = None
+    file_type = None
+
     if message.photo:
         file_obj = message.photo[-1]
-        s["photo"] += 1
+        file_type = "photo"
+        s["photo"] = s.get("photo", 0) + 1
 
     elif message.video:
         file_obj = message.video
-        s["video"] += 1
+        file_type = "video"
+        s["video"] = s.get("video", 0) + 1
 
     elif message.document:
         file_obj = message.document
-        s["document"] += 1
+        file_type = "document"
+        s["document"] = s.get("document", 0) + 1
 
-    else:
+    if not file_obj:
         return
 
     file_id = file_obj.file_id
     size = getattr(file_obj, "file_size", 0) or 0
 
+    # =========================
+    # SAVE TO SESSION
+    # =========================
     s["items"].append({
-    "file_id": file_id,
-    "type": "photo" if message.photo else "video" if message.video else "document",
-    "size": size
-})
+        "file_id": file_id,
+        "type": file_type,
+        "size": size
+    })
 
     # =========================
     # DELETE USER MESSAGE
@@ -446,18 +458,24 @@ async def handle_media(message: Message):
         pass
 
     # =========================
-    # THROTTLE
+    # THROTTLE (SAFE)
     # =========================
     now = time.time()
-    if now - last_edit_time.get(user_id, 0) < 1.5:
+    last = last_edit_time.get(user_id, 0)
+
+    if now - last < 1.5:
         return
+
     last_edit_time[user_id] = now
 
     # =========================
-    # STATS + UI (SATU KALI EDIT)
+    # CALCULATE STATS
     # =========================
     total = len(s["items"])
-    size_mb = round(sum(x["size"] for x in s["items"]) / (1024 * 1024), 2)
+    size_mb = round(
+        sum(x.get("size", 0) for x in s["items"]) / (1024 * 1024),
+        2
+    )
 
     bar_len = 10
     filled = min(bar_len, total)
@@ -466,14 +484,17 @@ async def handle_media(message: Message):
     text = (
         "📤 UPLOAD MODE\n\n"
         f"📊 Progress : [{bar}] {total} file\n\n"
-        f"🖼 Photo    : {s['photo']}\n"
-        f"🎬 Video    : {s['video']}\n"
-        f"📁 Document : {s['document']}\n"
+        f"🖼 Photo    : {s.get('photo', 0)}\n"
+        f"🎬 Video    : {s.get('video', 0)}\n"
+        f"📁 Document : {s.get('document', 0)}\n"
         f"💾 Size     : {size_mb} MB\n\n"
         "━━━━━━━━━━━━━━\n"
         "Tekan DONE kalau sudah 😏"
     )
 
+    # =========================
+    # SAFE EDIT MESSAGE
+    # =========================
     try:
         await safe_send(
             message.bot.edit_message_text,
@@ -513,7 +534,7 @@ async def done(call: CallbackQuery):
     # 🔥 ANTI DOUBLE CLICK / RACE CONDITION
     if s.get("processing"):
         return await call.answer("⏳ Lagi diproses...")
-    s["processing"] = True
+    s["processing"] = False
 
     try:
         code = generate_code(
@@ -544,48 +565,20 @@ async def done(call: CallbackQuery):
             )
 
             # =========================
-            # UPLOAD TO CHANNEL
+            # SAVE FILE_ID DIRECT (NO CHANNEL DB)
             # =========================
             for m in s["items"]:
 
                 file_id = m.get("file_id")
                 file_type = m.get("type")
+                size = m.get("size", 0)
 
                 if not file_id or not file_type:
                     continue
 
-                try:
-                    if file_type == "photo":
-                        msg = await call.bot.send_photo(
-                            chat_id=CHANNEL_DB,
-                            photo=file_id
-                        )
-                        new_file_id = msg.photo[-1].file_id
-
-                    elif file_type == "video":
-                        msg = await call.bot.send_video(
-                            chat_id=CHANNEL_DB,
-                            video=file_id
-                        )
-                        new_file_id = msg.video.file_id
-
-                    elif file_type == "document":
-                        msg = await call.bot.send_document(
-                            chat_id=CHANNEL_DB,
-                            document=file_id
-                        )
-                        new_file_id = msg.document.file_id
-
-                    else:
-                        continue
-
-                    saved_items.append(
-                        (code, new_file_id, file_type, m.get("size", 0))
-                    )
-
-                except Exception as e:
-                    print("UPLOAD ERROR:", e)
-                    continue
+                saved_items.append(
+                    (code, file_id, file_type, size)
+                )
 
             # =========================
             # SAVE MEDIA INDEX
