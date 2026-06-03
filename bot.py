@@ -260,7 +260,21 @@ async def start(message: Message, bot: Bot):
 
     user = message.from_user
 
-    # 🔥 ANTI SPAM USER
+    # =========================
+    # SAVE USER (HARUS DI AWAL)
+    # =========================
+    try:
+        await add_user(
+            user.id,
+            user.username or "none",
+            user.full_name
+        )
+    except Exception as e:
+        print("ADD USER ERROR:", e)
+
+    # =========================
+    # ANTI SPAM USER
+    # =========================
     if not user_limit(user.id):
         return await safe_send(
             message.answer,
@@ -281,18 +295,6 @@ async def start(message: Message, bot: Bot):
                 "Join dulu baru bisa lanjut.",
                 reply_markup=force_kb(FORCE_CHANNEL)
             )
-
-    # =========================
-    # SAVE USER (SAFE)
-    # =========================
-    try:
-        await add_user(
-            user.id,
-            user.username or "none",
-            user.full_name
-        )
-    except Exception as e:
-        print("ADD USER ERROR:", e)
 
     # =========================
     # RESPONSE
