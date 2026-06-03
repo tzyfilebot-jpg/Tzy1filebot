@@ -61,10 +61,30 @@ async def init_db():
 
     db_pool = await asyncpg.create_pool(
         DATABASE_URL,
-        min_size=1,
-        max_size=10,
-        statement_cache_size=100,   # FIX
-        command_timeout=15          # FIX
+
+        # =========================
+        # CONNECTION POOL (STABLE)
+        # =========================
+        min_size=2,
+        max_size=5,
+
+        # =========================
+        # PGBOUNCER FIX (WAJIB)
+        # =========================
+        statement_cache_size=0,
+        prepare_threshold=0,
+
+        # =========================
+        # PERFORMANCE
+        # =========================
+        command_timeout=15,
+
+        # =========================
+        # SERVER SETTINGS (OPTIONAL STABILITY)
+        # =========================
+        server_settings={
+            "jit": "off"
+        }
     )
 
     async with db_pool.acquire() as conn:
@@ -91,7 +111,6 @@ async def init_db():
             file_size BIGINT
         );
         """)
-
 # =========================
 # CACHE / MEMORY
 # =========================
