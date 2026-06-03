@@ -12,7 +12,7 @@ import asyncio
 import random
 
 from dotenv import load_dotenv
-
+from aiogram.filters import CommandStart
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message,
@@ -256,7 +256,7 @@ def force_kb():
 # START
 # =========================
 
-@router.message(CommandStart())
+@router.message(F.text == "/start")
 async def start(message: Message, bot: Bot):
 
     user = message.from_user
