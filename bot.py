@@ -612,7 +612,7 @@ async def done(call: CallbackQuery):
             f"📦 Total File : {total_items}\n"
             f"💾 Size      : {round(total_size / (1024 * 1024), 2)} MB\n\n"
             "📦 File berhasil disimpan 😏\n"
-            "🤖 Bot: tzyfilerobot",
+            "🤖 Bot: xywukaibot",
             parse_mode="HTML"
         )
 
