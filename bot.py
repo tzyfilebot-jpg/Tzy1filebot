@@ -789,9 +789,21 @@ def build_kb(user_id, page, total_pages):
     if page_row:
         rows.append(page_row)
 
+    # =========================
+    # LINK BUTTONS (FIXED)
+    # =========================
+    rows.append([
+        InlineKeyboardButton(
+            text="📢 CHANNEL UPDATE",
+            url="https://t.me/+3g_yhHwxCrc5ZTg9"
+        ),
+        InlineKeyboardButton(
+            text="💬 GROUP CHAT",
+            url="https://t.me/+1tipdp-NTywzODhl"
+        )
+    ])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 # =========================
 # RENDER PAGE (CORE)
 # =========================
@@ -879,7 +891,7 @@ async def pagination(call: CallbackQuery):
 # =========================
 @router.callback_query(F.data == "noop")
 async def noop(call):
-    await call.answer("😏")
+    await call.answer("😏 FULL JANCOK")
 
 
 # =========================
