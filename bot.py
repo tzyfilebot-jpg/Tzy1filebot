@@ -806,8 +806,7 @@ def build_kb(user_id, page, total_pages):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 # =========================
 # RENDER PAGE (CORE)
-# =========================
-async def render_page(user_id: int, bot, chat_id: int):
+# =========================async def render_page(user_id: int, bot, chat_id: int):
     state = user_states.get(user_id)
 
     if not state:
@@ -832,22 +831,39 @@ async def render_page(user_id: int, bot, chat_id: int):
     # =========================
     # SEND MEDIA
     # =========================
-    await send_media(bot, chat_id, chunk)
+    try:
+        await send_media(bot, chat_id, chunk)
+    except Exception as e:
+        print("SEND MEDIA ERROR:", e)
 
+    # =========================
+    # TEXT PANEL
+    # =========================
     text = (
-        f"📦 CODE: <code>{state['code']}</code>\n"
-        f"📄 Page: {page+1}/{total_pages}\n"
-        f"📁 Media: {start+1}-{start+len(chunk)} / {len(data)}"
+        f"📦 CODE: <code>{state.get('code','-')}</code>\n"
+        f"📄 Page: {page + 1}/{total_pages}\n"
+        f"📁 Media: {start + 1}-{start + len(chunk)} / {len(data)}\n\n"
+        "👇 CONTROL PANEL DI BAWAH"
     )
 
     kb = build_kb(user_id, page, total_pages)
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+    # =========================
+    # SEND PANEL
+    # =========================
+    try:
+        msg = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+
+        # optional: biar tidak numpuk (EDIT LAST MESSAGE STYLE)
+        state["last_panel_msg"] = msg.message_id
+
+    except Exception as e:
+        print("SEND PANEL ERROR:", e)
 # =========================
 # SINGLE PAGINATION HANDLER
 # =========================
