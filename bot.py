@@ -561,7 +561,7 @@ async def done(call: CallbackQuery):
     # 🔥 ANTI DOUBLE CLICK / RACE CONDITION
     if s.get("processing"):
         return await call.answer("⏳ Lagi diproses...")
-    s["processing"] = False
+    s["processing"] = True
 
     try:
         code = generate_code(
@@ -728,49 +728,89 @@ async def load_media(code: str):
 async def send_media(bot, chat_id: int, chunk: list):
 
     if not chunk:
-        return
+        return False
 
     media = []
 
     for m in chunk[:5]:
+
         fid = m.get("file_id")
-        t = (m.get("file_type") or "").lower()
+        ftype = (m.get("file_type") or "").lower()
 
         if not fid:
             continue
 
         try:
-            if t == "photo":
-                media.append(InputMediaPhoto(media=fid))
-            elif t == "video":
-                media.append(InputMediaVideo(media=fid))
+
+            if ftype == "photo":
+                media.append(
+                    InputMediaPhoto(media=fid)
+                )
+
+            elif ftype == "video":
+                media.append(
+                    InputMediaVideo(media=fid)
+                )
+
             else:
-                media.append(InputMediaDocument(media=fid))
+                media.append(
+                    InputMediaDocument(media=fid)
+                )
+
         except Exception as e:
             print("MEDIA BUILD ERROR:", e)
-            continue
 
     if not media:
-        return
+        return False
 
-    # 🔥 RETRY SYSTEM (ANTI FLOOD SAFE)
-    for attempt in range(3):
+    for attempt in range(5):
+
         try:
-            await bot.send_media_group(chat_id, media)
 
-            await asyncio.sleep(0.5 + random.uniform(0.2, 0.8))
-            return
+            await global_throttle()
+
+            await bot.send_media_group(
+                chat_id=chat_id,
+                media=media
+            )
+
+            return True
+
+        except TelegramRetryAfter as e:
+
+            print(
+                f"FLOODWAIT {e.retry_after}s"
+            )
+
+            await asyncio.sleep(
+                e.retry_after + 1
+            )
+
+        except TelegramBadRequest as e:
+
+            print(
+                "BAD REQUEST:",
+                e
+            )
+
+            return False
 
         except Exception as e:
-            err = str(e).lower()
-            print(f"SEND MEDIA ERROR {attempt+1}:", e)
 
-            if "retry after" in err:
-                await asyncio.sleep(3 + attempt * 2)
-            else:
-                await asyncio.sleep(1.5 + attempt)
+            print(
+                f"SEND MEDIA ERROR {attempt+1}:",
+                e
+            )
 
-    print("❌ GAGAL KIRIM MEDIA SETELAH 3X RETRY")
+            await asyncio.sleep(
+                1 + attempt
+            )
+
+    print(
+        "❌ GAGAL KIRIM MEDIA"
+    )
+
+    return False
 # =========================
 # KEYBOARD
 # =========================
@@ -832,42 +872,73 @@ def build_kb(user_id, page, total_pages):
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 # =========================
-# RENDER PAGE (CORE)
+# RENDER PAGE (FIX FINAL)
 # =========================
-    
+
 async def render_page(user_id: int, bot, chat_id: int):
+
     state = user_states.get(user_id)
 
     if not state:
         return
 
     data = state.get("data") or []
+
     if not data:
         return
 
     page = state.get("page", 0)
     size = state.get("page_size", 5)
 
-    total_pages = max(1, (len(data) + size - 1) // size)
+    total_pages = max(
+        1,
+        (len(data) + size - 1) // size
+    )
 
-    # clamp page
-    page = max(0, min(page, total_pages - 1))
+    page = max(
+        0,
+        min(page, total_pages - 1)
+    )
+
     state["page"] = page
 
     start = page * size
-    chunk = data[start:start + size]
+    end = start + size
+
+    chunk = data[start:end]
+
+    # =========================
+    # HISTORY
+    # =========================
+
+    page_history.setdefault(
+        user_id,
+        set()
+    ).add(page)
 
     # =========================
     # SEND MEDIA
     # =========================
+
     try:
-        await send_media(bot, chat_id, chunk)
+
+        await send_media(
+            bot,
+            chat_id,
+            chunk
+        )
+
     except Exception as e:
-        print("SEND MEDIA ERROR:", e)
+
+        print(
+            "SEND MEDIA ERROR:",
+            e
+        )
 
     # =========================
-    # TEXT PANEL
+    # PANEL TEXT
     # =========================
+
     text = (
         f"📦 CODE: <code>{state.get('code','-')}</code>\n"
         f"📄 Page: {page + 1}/{total_pages}\n"
@@ -875,12 +946,62 @@ async def render_page(user_id: int, bot, chat_id: int):
         "👇 CONTROL PANEL DI BAWAH"
     )
 
-    kb = build_kb(user_id, page, total_pages)
+    kb = build_kb(
+        user_id,
+        page,
+        total_pages
+    )
 
     # =========================
-    # SEND PANEL
+    # EDIT PANEL
     # =========================
+
+    panel_id = state.get(
+        "last_panel_msg"
+    )
+
+    if panel_id:
+
+        try:
+
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=panel_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+
+            return
+
+        except TelegramBadRequest as e:
+
+            err = str(e).lower()
+
+            if (
+                "message is not modified"
+                in err
+            ):
+                return
+
+            print(
+                "EDIT PANEL ERROR:",
+                e
+            )
+
+        except Exception as e:
+
+            print(
+                "EDIT PANEL ERROR:",
+                e
+            )
+
+    # =========================
+    # CREATE PANEL
+    # =========================
+
     try:
+
         msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
@@ -888,11 +1009,16 @@ async def render_page(user_id: int, bot, chat_id: int):
             parse_mode="HTML"
         )
 
-        # optional: biar tidak numpuk (EDIT LAST MESSAGE STYLE)
-        state["last_panel_msg"] = msg.message_id
+        state[
+            "last_panel_msg"
+        ] = msg.message_id
 
     except Exception as e:
-        print("SEND PANEL ERROR:", e)
+
+        print(
+            "SEND PANEL ERROR:",
+            e
+        )
 # =========================
 # SINGLE PAGINATION HANDLER
 # =========================
