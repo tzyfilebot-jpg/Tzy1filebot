@@ -1707,6 +1707,36 @@ async def help_button(message: Message):
         parse_mode="HTML"
     )
 
+# =========================
+# CLEANUP MEMORY
+# =========================
+
+async def cleanup_task():
+
+    while True:
+
+        await asyncio.sleep(600)
+
+        now = time.time()
+
+        for uid in list(user_last_action):
+
+            # 6 JAM TIDAK AKTIF
+            if now - user_last_action[uid] > 21600:
+
+                user_last_action.pop(uid, None)
+
+                page_history.pop(uid, None)
+
+                user_states.pop(uid, None)
+
+                upload_sessions.pop(uid, None)
+
+                last_edit_time.pop(uid, None)
+
+                page_cooldown.pop(uid, None)
+
+                user_click_lock.pop(uid, None)
 
 # =========================
 # STARTUP
@@ -1720,23 +1750,33 @@ async def main():
 
     await init_db()
 
+    # =========================
+    # START BACKGROUND TASK
+    # =========================
+    asyncio.create_task(
+        cleanup_task()
+    )
+
     print("🔥 BOT STARTED")
 
     try:
         await dp.start_polling(bot)
 
     except Exception as e:
-        print("❌ BOT ERROR:", e)
+
+        print(
+            "❌ BOT ERROR:",
+            e
+        )
 
     finally:
+
         print("💀 SHUTDOWN...")
 
         if db_pool:
             await db_pool.close()
 
         await bot.session.close()
-
-
 # =========================
 # RUN
 # =========================
