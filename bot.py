@@ -390,14 +390,28 @@ async def up_file(message: Message):
 
     user_id = message.from_user.id
 
+    # =========================
+    # ANTI SPAM
+    # =========================
     if not user_limit(user_id):
-        return await safe_send(message.answer, "⏳ Jangan spam ya 😏")
+        return await safe_send(
+            message.answer,
+            "⏳ Jangan spam ya 😏"
+        )
 
-    # reset session
+    # =========================
+    # RESET SESSION LAMA
+    # =========================
     upload_sessions.pop(user_id, None)
     user_states.pop(user_id, None)
+    last_edit_time.pop(user_id, None)
 
-    user_states[user_id] = {"mode": "upload"}
+    # =========================
+    # CREATE STATE
+    # =========================
+    user_states[user_id] = {
+        "mode": "upload"
+    }
 
     upload_sessions[user_id] = {
         "video": 0,
@@ -407,6 +421,9 @@ async def up_file(message: Message):
         "msg_id": None
     }
 
+    # =========================
+    # SEND PANEL
+    # =========================
     msg = await safe_send(
         message.answer,
         "📤 UPLOAD MODE AKTIF\n\n"
@@ -416,9 +433,19 @@ async def up_file(message: Message):
         reply_markup=upload_kb()
     )
 
+    # =========================
+    # VALIDASI MESSAGE
+    # =========================
+    if not msg:
+        upload_sessions.pop(user_id, None)
+        user_states.pop(user_id, None)
+
+        return
+
+    # =========================
+    # SAVE PANEL ID
+    # =========================
     upload_sessions[user_id]["msg_id"] = msg.message_id
-
-
 # =========================
 # MEDIA HANDLER (FINAL CLEAN)
 # =========================
@@ -872,7 +899,7 @@ def build_kb(user_id, page, total_pages):
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 # =========================
-# RENDER PAGE (FIX FINAL)
+# RENDER PAGE (FIX PANEL BAWAH)
 # =========================
 
 async def render_page(user_id: int, bot, chat_id: int):
@@ -953,65 +980,44 @@ async def render_page(user_id: int, bot, chat_id: int):
     )
 
     # =========================
-    # EDIT PANEL
+    # DELETE PANEL LAMA
     # =========================
 
-    panel_id = state.get(
-        "last_panel_msg"
-    )
+    panel_id = state.get("last_panel_msg")
 
     if panel_id:
 
         try:
 
-            await bot.edit_message_text(
+            await safe_send(
+                bot.delete_message,
                 chat_id=chat_id,
-                message_id=panel_id,
-                text=text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-
-            return
-
-        except TelegramBadRequest as e:
-
-            err = str(e).lower()
-
-            if (
-                "message is not modified"
-                in err
-            ):
-                return
-
-            print(
-                "EDIT PANEL ERROR:",
-                e
+                message_id=panel_id
             )
 
         except Exception as e:
 
             print(
-                "EDIT PANEL ERROR:",
+                "DELETE PANEL ERROR:",
                 e
             )
 
     # =========================
-    # CREATE PANEL
+    # CREATE PANEL BARU
     # =========================
 
     try:
 
-        msg = await bot.send_message(
+        msg = await safe_send(
+            bot.send_message,
             chat_id=chat_id,
             text=text,
             reply_markup=kb,
             parse_mode="HTML"
         )
 
-        state[
-            "last_panel_msg"
-        ] = msg.message_id
+        if msg:
+            state["last_panel_msg"] = msg.message_id
 
     except Exception as e:
 
@@ -1020,51 +1026,128 @@ async def render_page(user_id: int, bot, chat_id: int):
             e
         )
 # =========================
+# PAGINATION LOCK
+# =========================
+pagination_lock = {}
+
+# =========================
 # SINGLE PAGINATION HANDLER
 # =========================
 @router.callback_query(
-    F.data.in_(["next", "prev"]) | F.data.startswith("page:")
+    F.data.in_(["next", "prev"]) |
+    F.data.startswith("page:")
 )
 async def pagination(call: CallbackQuery):
 
     user_id = call.from_user.id
-    state = user_states.get(user_id)
 
-    if not state:
-        return await call.answer("Session expired")
+    # =========================
+    # ANTI DOUBLE CLICK
+    # =========================
+    if pagination_lock.get(user_id):
+        return await call.answer()
 
-    data = state.get("data") or []
-    if not data:
-        return await call.answer("No data")
+    pagination_lock[user_id] = True
 
-    page = state.get("page", 0)
-    size = state.get("page_size", 5)
-    max_page = (len(data) - 1) // size
+    try:
 
-    if call.data == "next":
-        page += 1
-    elif call.data == "prev":
-        page -= 1
-    else:
-        try:
-            page = int(call.data.split(":")[1])
-        except:
-            return await call.answer("Error")
+        state = user_states.get(user_id)
 
-    page = max(0, min(page, max_page))
-    state["page"] = page
+        if not state:
+            return await call.answer(
+                "Session expired",
+                show_alert=True
+            )
 
-    await render_page(user_id, call.bot, call.message.chat.id)
+        data = state.get("data") or []
 
+        if not data:
+            return await call.answer(
+                "No data",
+                show_alert=True
+            )
+
+        old_page = state.get(
+            "page",
+            0
+        )
+
+        size = state.get(
+            "page_size",
+            5
+        )
+
+        max_page = (
+            len(data) - 1
+        ) // size
+
+        page = old_page
+
+        # =========================
+        # PAGE CONTROL
+        # =========================
+        if call.data == "next":
+
+            page += 1
+
+        elif call.data == "prev":
+
+            page -= 1
+
+        else:
+
+            try:
+
+                page = int(
+                    call.data.split(":")[1]
+                )
+
+            except Exception:
+
+                return await call.answer(
+                    "Error"
+                )
+
+        page = max(
+            0,
+            min(page, max_page)
+        )
+
+        # =========================
+        # NO CHANGE
+        # =========================
+        if page == old_page:
+            return await call.answer()
+
+        state["page"] = page
+
+        # =========================
+        # RENDER PAGE
+        # =========================
+        await render_page(
+            user_id,
+            call.bot,
+            call.message.chat.id
+        )
+
+        await call.answer()
+
+    finally:
+
+        pagination_lock.pop(
+            user_id,
+            None
+        )
 
 # =========================
 # NOOP
 # =========================
 @router.callback_query(F.data == "noop")
-async def noop(call):
-    await call.answer("😏 FULL JANCOK")
+async def noop(call: CallbackQuery):
 
-
+    await call.answer(
+        "😏 FULL JANCOK"
+    )
 # =========================
 # START GET FILE
 # =========================
