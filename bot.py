@@ -1176,7 +1176,10 @@ async def receive_code(message: Message):
     if is_cooldown(user_id):
         return await message.answer("⏳ Jangan spam")
 
-    codes = re.findall(r"\bxywukai_[A-Za-z0-9_]+\b", message.text or "")
+    codes = re.findall(
+        r"\bxywukai_[A-Za-z0-9_]+\b",
+        message.text or ""
+    )
 
     if not codes:
         return await message.answer("❌ CODE salah")
@@ -1186,9 +1189,12 @@ async def receive_code(message: Message):
     all_data = []
 
     for code in codes:
+
         data = await load_media(code)
+
         if data:
             all_data.extend(data)
+
         await asyncio.sleep(0.1)
 
     if not all_data:
@@ -1196,20 +1202,58 @@ async def receive_code(message: Message):
 
     all_data = all_data[:50]
 
+    # =========================
+    # HAPUS PANEL LAMA
+    # =========================
+
+    old_state = user_states.get(user_id)
+
+    if old_state:
+
+        old_panel = old_state.get(
+            "last_panel_msg"
+        )
+
+        if old_panel:
+
+            try:
+
+                await message.bot.delete_message(
+                    chat_id=message.chat.id,
+                    message_id=old_panel
+                )
+
+            except Exception:
+                pass
+
+    # =========================
+    # BUAT SESSION BARU
+    # =========================
+
     user_states[user_id] = {
         "mode": "view",
         "code": codes[0],
         "page": 0,
         "page_size": 5,
-        "data": all_data
+        "data": all_data,
+        "last_panel_msg": None
     }
 
     page_history[user_id] = set()
 
-    await message.answer(f"📦 Ditemukan {len(all_data)} file")
+    await message.answer(
+        f"📦 Ditemukan {len(all_data)} file"
+    )
 
-    # 🔥 RENDER FINAL (SUDAH BENAR)
-    await render_page(user_id, message.bot, message.chat.id)
+    # =========================
+    # RENDER PAGE PERTAMA
+    # =========================
+
+    await render_page(
+        user_id,
+        message.bot,
+        message.chat.id
+    )
 # ======================
 # ADD USER FUNCTION
 # =========================
