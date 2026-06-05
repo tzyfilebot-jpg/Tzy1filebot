@@ -838,6 +838,7 @@ async def send_media(bot, chat_id: int, chunk: list):
     )
 
     return False
+    
 # =========================
 # KEYBOARD
 # =========================
