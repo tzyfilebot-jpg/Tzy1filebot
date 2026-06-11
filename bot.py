@@ -724,77 +724,110 @@ def is_cooldown(user_id):
 # LOAD MEDIA
 # =========================
 async def load_media(code: str):
+
     if not code:
         return []
 
     try:
+
         async with db_pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT file_id, file_type, COALESCE(file_size,0) AS file_size
+
+            rows = await conn.fetch(
+                """
+                SELECT
+                    file_id,
+                    file_type,
+                    COALESCE(file_size, 0) AS file_size
                 FROM medias
-                WHERE code=$1
-                ORDER BY id ASC
-            """, code)
+                WHERE code = $1
+                ORDER BY id
+                """,
+                code
+            )
+
+        return [
+            {
+                "file_id": row["file_id"],
+                "file_type": normalize_type(
+                    row["file_type"]
+                ),
+                "file_size": row["file_size"]
+            }
+            for row in rows
+        ]
+
     except Exception as e:
-        print("DB ERROR:", e)
+
+        print(
+            f"LOAD MEDIA ERROR [{code}] : {e}"
+        )
+
         return []
-
-    return [
-        {
-            "file_id": r["file_id"],
-            "file_type": normalize_type(r["file_type"]),
-            "file_size": r["file_size"]
-        }
-        for r in rows
-    ]
-
-
 # =========================
 # SEND MEDIA (ANTI BAN SAFE)
 # =========================
-async def send_media(bot, chat_id: int, chunk: list):
+async def send_media(
+    bot,
+    chat_id: int,
+    chunk: list
+):
 
     if not chunk:
         return False
 
     media = []
 
-    for m in chunk[:5]:
+    for m in chunk[:10]:
 
         fid = m.get("file_id")
-        ftype = (m.get("file_type") or "").lower()
 
         if not fid:
             continue
 
-        try:
+        ftype = (
+            m.get("file_type") or ""
+        ).lower()
 
-            if ftype == "photo":
-                media.append(
-                    InputMediaPhoto(media=fid)
+        if ftype == "photo":
+            media.append(
+                InputMediaPhoto(
+                    media=fid
                 )
+            )
 
-            elif ftype == "video":
-                media.append(
-                    InputMediaVideo(media=fid)
+        elif ftype == "video":
+            media.append(
+                InputMediaVideo(
+                    media=fid
                 )
+            )
 
-            else:
-                media.append(
-                    InputMediaDocument(media=fid)
+        else:
+            media.append(
+                InputMediaDocument(
+                    media=fid
                 )
-
-        except Exception as e:
-            print("MEDIA BUILD ERROR:", e)
+            )
 
     if not media:
         return False
 
-    for attempt in range(5):
+    try:
+
+        await bot.send_media_group(
+            chat_id=chat_id,
+            media=media
+        )
+
+        return True
+
+    except TelegramRetryAfter as e:
+
+        await asyncio.sleep(
+            e.retry_after + 1
+        )
 
         try:
-
-            await global_throttle()
 
             await bot.send_media_group(
                 chat_id=chat_id,
@@ -803,41 +836,26 @@ async def send_media(bot, chat_id: int, chunk: list):
 
             return True
 
-        except TelegramRetryAfter as e:
-
-            print(
-                f"FLOODWAIT {e.retry_after}s"
-            )
-
-            await asyncio.sleep(
-                e.retry_after + 1
-            )
-
-        except TelegramBadRequest as e:
-
-            print(
-                "BAD REQUEST:",
-                e
-            )
-
+        except Exception:
             return False
 
-        except Exception as e:
+    except TelegramBadRequest as e:
 
-            print(
-                f"SEND MEDIA ERROR {attempt+1}:",
-                e
-            )
+        print(
+            "BAD REQUEST:",
+            e
+        )
 
-            await asyncio.sleep(
-                1 + attempt
-            )
+        return False
 
-    print(
-        "❌ GAGAL KIRIM MEDIA"
-    )
+    except Exception as e:
 
-    return False
+        print(
+            "SEND ERROR:",
+            e
+        )
+
+        return False
     
 # =========================
 # KEYBOARD
@@ -847,46 +865,62 @@ def build_kb(user_id, page, total_pages):
     history = page_history.get(user_id, set())
     rows = []
 
-    prev_btn = InlineKeyboardButton(
-        text="⬅ Prev" if page > 0 else "⛔ Prev",
-        callback_data="prev" if page > 0 else "noop"
-    )
+    # =========================
+    # PAGINATION
+    # =========================
 
-    next_btn = InlineKeyboardButton(
-        text="➡ Next" if page < total_pages - 1 else "⛔ Next",
-        callback_data="next" if page < total_pages - 1 else "noop"
-    )
+    if total_pages > 1:
 
-    rows.append([prev_btn, next_btn])
-
-    # page indicator
-    window = 5
-    start = max(0, page - 2)
-    end = min(total_pages, start + window)
-
-    page_row = []
-    for i in range(start, end):
-
-        if i == page:
-            mark = "🟢"
-        elif i in history:
-            mark = "🟡"
-        else:
-            mark = "⚪"
-
-        page_row.append(
-            InlineKeyboardButton(
-                text=f"{i+1}{mark}",
-                callback_data=f"page:{i}"
-            )
+        prev_btn = InlineKeyboardButton(
+            text="⬅ Prev" if page > 0 else "⛔ Prev",
+            callback_data="prev" if page > 0 else "noop"
         )
 
-    if page_row:
-        rows.append(page_row)
+        next_btn = InlineKeyboardButton(
+            text="➡ Next" if page < total_pages - 1 else "⛔ Next",
+            callback_data="next" if page < total_pages - 1 else "noop"
+        )
+
+        rows.append([
+            prev_btn,
+            next_btn
+        ])
+
+        # =========================
+        # PAGE INDICATOR
+        # =========================
+
+        window = 5
+        start = max(0, page - 2)
+        end = min(total_pages, start + window)
+
+        page_row = []
+
+        for i in range(start, end):
+
+            if i == page:
+                mark = "🟢"
+
+            elif i in history:
+                mark = "🟡"
+
+            else:
+                mark = "⚪"
+
+            page_row.append(
+                InlineKeyboardButton(
+                    text=f"{i+1}{mark}",
+                    callback_data=f"page:{i}"
+                )
+            )
+
+        if page_row:
+            rows.append(page_row)
 
     # =========================
-    # LINK BUTTONS (FIXED)
+    # LINK BUTTONS
     # =========================
+
     rows.append([
         InlineKeyboardButton(
             text="📢 CHANNEL UPDATE",
@@ -898,12 +932,18 @@ def build_kb(user_id, page, total_pages):
         )
     ])
 
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
 # =========================
 # RENDER PAGE (FIX PANEL BAWAH)
 # =========================
 
-async def render_page(user_id: int, bot, chat_id: int):
+async def render_page(
+    user_id: int,
+    bot,
+    chat_id: int
+):
 
     state = user_states.get(user_id)
 
@@ -916,7 +956,7 @@ async def render_page(user_id: int, bot, chat_id: int):
         return
 
     page = state.get("page", 0)
-    size = state.get("page_size", 5)
+    size = state.get("page_size", 10)
 
     total_pages = max(
         1,
@@ -967,12 +1007,21 @@ async def render_page(user_id: int, bot, chat_id: int):
     # PANEL TEXT
     # =========================
 
-    text = (
-        f"📦 CODE: <code>{state.get('code','-')}</code>\n"
-        f"📄 Page: {page + 1}/{total_pages}\n"
-        f"📁 Media: {start + 1}-{start + len(chunk)} / {len(data)}\n\n"
-        "👇 CONTROL PANEL DI BAWAH"
-    )
+    if total_pages > 1:
+
+        text = (
+            f"📦 CODE: <code>{state.get('code','-')}</code>\n"
+            f"📄 Page: {page + 1}/{total_pages}\n"
+            f"📁 Media: {start + 1}-{start + len(chunk)} / {len(data)}\n\n"
+            "👇 CONTROL PANEL DI BAWAH"
+        )
+
+    else:
+
+        text = (
+            f"📦 CODE: <code>{state.get('code','-')}</code>\n"
+            f"📁 Total Media: {len(data)}"
+        )
 
     kb = build_kb(
         user_id,
@@ -984,24 +1033,21 @@ async def render_page(user_id: int, bot, chat_id: int):
     # DELETE PANEL LAMA
     # =========================
 
-    panel_id = state.get("last_panel_msg")
+    panel_id = state.get(
+        "last_panel_msg"
+    )
 
     if panel_id:
 
         try:
 
-            await safe_send(
-                bot.delete_message,
+            await bot.delete_message(
                 chat_id=chat_id,
                 message_id=panel_id
             )
 
-        except Exception as e:
-
-            print(
-                "DELETE PANEL ERROR:",
-                e
-            )
+        except Exception:
+            pass
 
     # =========================
     # CREATE PANEL BARU
@@ -1009,8 +1055,7 @@ async def render_page(user_id: int, bot, chat_id: int):
 
     try:
 
-        msg = await safe_send(
-            bot.send_message,
+        msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             reply_markup=kb,
@@ -1018,7 +1063,10 @@ async def render_page(user_id: int, bot, chat_id: int):
         )
 
         if msg:
-            state["last_panel_msg"] = msg.message_id
+
+            state[
+                "last_panel_msg"
+            ] = msg.message_id
 
     except Exception as e:
 
@@ -1030,9 +1078,8 @@ async def render_page(user_id: int, bot, chat_id: int):
 # PAGINATION LOCK
 # =========================
 pagination_lock = {}
-
 # =========================
-# SINGLE PAGINATION HANDLER
+# PAGINATION HANDLER
 # =========================
 @router.callback_query(
     F.data.in_(["next", "prev"]) |
@@ -1042,9 +1089,6 @@ async def pagination(call: CallbackQuery):
 
     user_id = call.from_user.id
 
-    # =========================
-    # ANTI DOUBLE CLICK
-    # =========================
     if pagination_lock.get(user_id):
         return await call.answer()
 
@@ -1087,6 +1131,7 @@ async def pagination(call: CallbackQuery):
         # =========================
         # PAGE CONTROL
         # =========================
+
         if call.data == "next":
 
             page += 1
@@ -1114,24 +1159,28 @@ async def pagination(call: CallbackQuery):
             min(page, max_page)
         )
 
-        # =========================
-        # NO CHANGE
-        # =========================
         if page == old_page:
             return await call.answer()
 
         state["page"] = page
 
         # =========================
-        # RENDER PAGE
+        # JAWAB CALLBACK DULU
         # =========================
-        await render_page(
-            user_id,
-            call.bot,
-            call.message.chat.id
-        )
 
         await call.answer()
+
+        # =========================
+        # RENDER BACKGROUND
+        # =========================
+
+        asyncio.create_task(
+            render_page(
+                user_id,
+                call.bot,
+                call.message.chat.id
+            )
+        )
 
     finally:
 
@@ -1140,15 +1189,14 @@ async def pagination(call: CallbackQuery):
             None
         )
 
+
 # =========================
 # NOOP
 # =========================
 @router.callback_query(F.data == "noop")
 async def noop(call: CallbackQuery):
 
-    await call.answer(
-        "😏 FULL JANCOK"
-    )
+    await call.answer()
 # =========================
 # START GET FILE
 # =========================
@@ -1174,7 +1222,9 @@ async def receive_code(message: Message):
         return
 
     if is_cooldown(user_id):
-        return await message.answer("⏳ Jangan spam")
+        return await message.answer(
+            "⏳ Jangan spam"
+        )
 
     codes = re.findall(
         r"\bxywukai_[A-Za-z0-9_]+\b",
@@ -1182,23 +1232,58 @@ async def receive_code(message: Message):
     )
 
     if not codes:
-        return await message.answer("❌ CODE salah")
+        return await message.answer(
+            "❌ CODE salah"
+        )
 
-    codes = list(dict.fromkeys(codes))[:3]
+    codes = list(
+        dict.fromkeys(codes)
+    )[:3]
+
+    # =========================
+    # LOADING
+    # =========================
+
+    loading = await message.answer(
+        "⏳ Sedang memproses..."
+    )
+
+    # =========================
+    # LOAD MEDIA PARALEL
+    # =========================
+
+    try:
+
+        results = await asyncio.gather(
+            *[
+                load_media(code)
+                for code in codes
+            ]
+        )
+
+    except Exception as e:
+
+        print(
+            "LOAD MEDIA ERROR:",
+            e
+        )
+
+        return await loading.edit_text(
+            "❌ Gagal mengambil data"
+        )
 
     all_data = []
 
-    for code in codes:
-
-        data = await load_media(code)
+    for data in results:
 
         if data:
             all_data.extend(data)
 
-        await asyncio.sleep(0.1)
-
     if not all_data:
-        return await message.answer("❌ Tidak ditemukan")
+
+        return await loading.edit_text(
+            "❌ Tidak ditemukan"
+        )
 
     all_data = all_data[:50]
 
@@ -1206,7 +1291,9 @@ async def receive_code(message: Message):
     # HAPUS PANEL LAMA
     # =========================
 
-    old_state = user_states.get(user_id)
+    old_state = user_states.get(
+        user_id
+    )
 
     if old_state:
 
@@ -1227,32 +1314,39 @@ async def receive_code(message: Message):
                 pass
 
     # =========================
-    # BUAT SESSION BARU
+    # SESSION BARU
     # =========================
 
     user_states[user_id] = {
         "mode": "view",
         "code": codes[0],
         "page": 0,
-        "page_size": 5,
+        "page_size": 10,
         "data": all_data,
         "last_panel_msg": None
     }
 
     page_history[user_id] = set()
 
-    await message.answer(
-        f"📦 Ditemukan {len(all_data)} file"
-    )
-
     # =========================
-    # RENDER PAGE PERTAMA
+    # HAPUS LOADING
     # =========================
 
-    await render_page(
-        user_id,
-        message.bot,
-        message.chat.id
+    try:
+        await loading.delete()
+    except Exception:
+        pass
+
+    # =========================
+    # RENDER PAGE
+    # =========================
+
+    asyncio.create_task(
+        render_page(
+            user_id,
+            message.bot,
+            message.chat.id
+        )
     )
 # ======================
 # ADD USER FUNCTION
